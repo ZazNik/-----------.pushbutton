@@ -10,6 +10,7 @@ from System.Windows.Forms import (Form, Label, ComboBox, Button, DialogResult,
 from System.Drawing import Point, Size
 
 from config import load_config, save_config, safe_unicode
+from constants import *
 
 class DwgLayerSelector(Form):
     def __init__(self, dwgs_dict, line_styles, pipe_systems):
@@ -160,7 +161,7 @@ class DwgLayerSelector(Form):
             saved = self.config.get(key, u"")
             
             if not self.set_combo_value(cb, saved):
-                if not self.set_combo_value(cb, u"Тонкие линии"):
+                if not self.set_combo_value(cb, DEF_LINE_STYLE):
                     if not self.set_combo_value(cb, u"Thin Lines"):
                         if cb.Items.Count > 0: cb.SelectedIndex = 0
                 

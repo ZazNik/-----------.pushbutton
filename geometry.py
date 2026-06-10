@@ -6,6 +6,7 @@ import math
 import clr
 clr.AddReference('RevitAPI')
 from Autodesk.Revit.DB import XYZ
+from constants import *
 
 def intersect_edge_2d(p1, p2, p3, p4):
     """
@@ -81,11 +82,25 @@ def slice_edges(pt_start, pt_end, x_start, edges):
     if L_2d < 0.001:
         return local_pts
         
+    # Заранее считаем габариты (BoundingBox) текущего луча сканирования с микро-запасом
+    min_x, max_x = min(pt_start.X, pt_end.X) - 0.01, max(pt_start.X, pt_end.X) + 0.01
+    min_y, max_y = min(pt_start.Y, pt_end.Y) - 0.01, max(pt_start.Y, pt_end.Y) + 0.01
+
     for edge in edges:
-        t_p, t_e = intersect_edge_2d(pt_start, pt_end, edge[0], edge[1])
+        p1, p2 = edge[0], edge[1]
+        
+        # БЫСТРЫЙ ФИЛЬТР: Отсекаем линии DWG, которые физически далеко от луча
+        # Это отсеет 95-99% линий подложки за доли миллисекунды
+        if (max_x < min(p1.X, p2.X) or min_x > max(p1.X, p2.X) or 
+            max_y < min(p1.Y, p2.Y) or min_y > max(p1.Y, p2.Y)):
+            continue
+
+        # Тяжелая математика пересечения вызывается только для тех линий, 
+        # которые попали в зону луча
+        t_p, t_e = intersect_edge_2d(pt_start, pt_end, p1, p2)
         if t_p is not None:
             calc_x = x_start + t_p * L_2d
-            calc_z = edge[0].Z + t_e * (edge[1].Z - edge[0].Z)
+            calc_z = p1.Z + t_e * (p2.Z - p1.Z)
             local_pts.append({"x": calc_x, "z": calc_z})
             
     local_pts.sort(key=lambda item: item["x"])

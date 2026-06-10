@@ -2,6 +2,7 @@
 import os
 import codecs
 import System
+from constants import *
 
 # Прямой вызов .NET для получения пути (работает всегда, даже если Revit обрезал os.environ)
 app_data = System.Environment.GetFolderPath(System.Environment.SpecialFolder.ApplicationData)

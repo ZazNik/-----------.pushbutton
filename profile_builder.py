@@ -11,6 +11,7 @@ from Autodesk.Revit.DB import (XYZ, Line, Arc, TextNote, TextNoteOptions,
 
 # Импортируем нашу конвертацию из модуля геометрии
 from geometry import paper_mm_to_ft
+from constants import *
 
 def create_drafting_view(doc, view_name, scale):
     """

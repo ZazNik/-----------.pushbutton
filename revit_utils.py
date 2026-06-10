@@ -5,38 +5,32 @@ from Autodesk.Revit.DB import (BuiltInParameter, BuiltInCategory, ElementId,
                                GeometryInstance, Line, PolyLine, GraphicsStyleType, 
                                SetComparisonResult)
 
+from constants import *
+
 def get_pipe_abbr(pipe, doc):
     """Возвращает сокращение для системы (аббревиатуру) трубы."""
-    abbr = ""
-    try:
-        p_abbr = pipe.LookupParameter("Сокращение для системы")
-        if p_abbr and p_abbr.HasValue:
-            abbr = p_abbr.AsString()
-    except Exception:
-        pass
+    # Обрати внимание: мы импортируем константу, если ты добавил её в constants.py
+    # Если нет, просто оставь строку "Система не задана"
+    from constants import DEF_SYSTEM 
     
-    if not abbr:
-        try:
-            for p in pipe.Parameters:
-                if p.Definition and p.Definition.Name == "Сокращение для системы":
-                    abbr = p.AsString()
-                    break
-        except Exception:
-            pass
+    abbr = ""
+    
+    # 1. Сначала ищем кастомный параметр экземпляра
+    p_abbr = pipe.LookupParameter("Сокращение для системы")
+    if p_abbr and p_abbr.HasValue:
+        abbr = p_abbr.AsString()
         
+    # 2. Если его нет, достаем системную аббревиатуру из типа трубопроводной системы
     if not abbr:
-        try:
-            sys_param = pipe.get_Parameter(BuiltInParameter.RBS_PIPING_SYSTEM_TYPE_PARAM)
-            if sys_param and sys_param.HasValue:
-                sys_elem = doc.GetElement(sys_param.AsElementId())
-                if sys_elem:
-                    p_abbr_type = sys_elem.get_Parameter(BuiltInParameter.RBS_PIPING_SYSTEM_ABBREVIATION_PARAM)
-                    if p_abbr_type and p_abbr_type.HasValue:
-                        abbr = p_abbr_type.AsString()
-        except Exception:
-            pass
-        
-    return abbr if abbr else "Система не задана"
+        sys_param = pipe.get_Parameter(BuiltInParameter.RBS_PIPING_SYSTEM_TYPE_PARAM)
+        if sys_param and sys_param.HasValue:
+            sys_elem = doc.GetElement(sys_param.AsElementId())
+            if sys_elem:
+                p_abbr_type = sys_elem.get_Parameter(BuiltInParameter.RBS_PIPING_SYSTEM_ABBREVIATION_PARAM)
+                if p_abbr_type and p_abbr_type.HasValue:
+                    abbr = p_abbr_type.AsString()
+                    
+    return abbr if abbr else DEF_SYSTEM
 
 def get_edges_from_layer(doc, geom_elem, layer_name, parent_is_target=False):
     """
@@ -92,84 +86,99 @@ def are_connected(v1, v2):
     Сначала проверяет логические коннекторы (даже через фитинги), 
     затем физическое пересечение или касание геометрии.
     """
+    # Базовая защита от пустых объектов
+    if not v1 or not v2: 
+        return False
+
     id1, id2 = v1.Id, v2.Id
-    is_p1 = v1.Category.Id.IntegerValue == int(BuiltInCategory.OST_PipeCurves)
-    is_p2 = v2.Category.Id.IntegerValue == int(BuiltInCategory.OST_PipeCurves)
     
-    # Внутренняя функция для проверки коннекторов
+    # Безопасная проверка категорий
+    is_p1 = v1.Category and v1.Category.Id.IntegerValue == int(BuiltInCategory.OST_PipeCurves)
+    is_p2 = v2.Category and v2.Category.Id.IntegerValue == int(BuiltInCategory.OST_PipeCurves)
+    
+    # --- 1. ЛОГИЧЕСКАЯ ПРОВЕРКА (Коннекторы) ---
     def get_logical(elem):
         res = set()
-        try:
-            cm = None
-            if hasattr(elem, "ConnectorManager"): cm = elem.ConnectorManager
-            elif hasattr(elem, "MEPModel") and elem.MEPModel: cm = elem.MEPModel.ConnectorManager
+        cm = None
+        
+        # Строгая и безопасная проверка свойств вместо слепого try/except
+        if hasattr(elem, "ConnectorManager") and elem.ConnectorManager:
+            cm = elem.ConnectorManager
+        elif hasattr(elem, "MEPModel") and elem.MEPModel and elem.MEPModel.ConnectorManager:
+            cm = elem.MEPModel.ConnectorManager
             
-            if cm:
-                for c in cm.Connectors:
-                    if c.IsConnected:
-                        for r in c.AllRefs:
-                            if r.Owner.Id != elem.Id:
-                                res.add(r.Owner.Id)
-                                # Если соединены через фитинг, смотрим дальше
-                                if r.Owner.Category.Id.IntegerValue == int(BuiltInCategory.OST_PipeFitting):
-                                    if hasattr(r.Owner, "MEPModel") and r.Owner.MEPModel:
-                                        fcm = r.Owner.MEPModel.ConnectorManager
-                                        if fcm:
-                                            for fc in fcm.Connectors:
-                                                if fc.IsConnected:
-                                                    for fr in fc.AllRefs:
-                                                        if fr.Owner.Id != r.Owner.Id and fr.Owner.Id != elem.Id:
-                                                            res.add(fr.Owner.Id)
-        except Exception:
-            pass
+        if cm:
+            for c in cm.Connectors:
+                if c.IsConnected:
+                    for r in c.AllRefs:
+                        if r.Owner.Id != elem.Id:
+                            res.add(r.Owner.Id)
+                            
+                            # Если соединены через фитинг, смотрим дальше (безопасный спуск)
+                            if r.Owner.Category and r.Owner.Category.Id.IntegerValue == int(BuiltInCategory.OST_PipeFitting):
+                                if hasattr(r.Owner, "MEPModel") and r.Owner.MEPModel and r.Owner.MEPModel.ConnectorManager:
+                                    fcm = r.Owner.MEPModel.ConnectorManager
+                                    for fc in fcm.Connectors:
+                                        if fc.IsConnected:
+                                            for fr in fc.AllRefs:
+                                                if fr.Owner.Id not in [r.Owner.Id, elem.Id]:
+                                                    res.add(fr.Owner.Id)
         return res
         
-    # Проверка через коннекторы
     if id2 in get_logical(v1): 
         return True
     
-    # Проверка физического пересечения/касания
-    if is_p1 and is_p2:
-        c1 = v1.Location.Curve
-        c2 = v2.Location.Curve
+    # --- 2. БЕЗОПАСНОЕ ИЗВЛЕЧЕНИЕ ОСЕЙ ---
+    def get_curve(elem):
+        if hasattr(elem, "Location") and elem.Location:
+            # Проверяем, что Location это линия (Curve), а не точка
+            if hasattr(elem.Location, "Curve") and elem.Location.Curve:
+                return elem.Location.Curve
+        return None
+
+    c1 = get_curve(v1)
+    c2 = get_curve(v2)
+
+    # --- 3. ПРОВЕРКА ФИЗИЧЕСКОГО ПЕРЕСЕЧЕНИЯ ---
+    if is_p1 and is_p2 and c1 and c2:
         for i in range(2):
             pt1 = c1.GetEndPoint(i)
-            try:
-                proj = c2.Project(pt1)
-                if proj and pt1.DistanceTo(proj.XYZPoint) < 0.05: return True
-            except Exception: pass
+            proj2 = c2.Project(pt1)
+            if proj2 and pt1.DistanceTo(proj2.XYZPoint) < 0.05: return True
             
             pt2 = c2.GetEndPoint(i)
-            try:
-                proj = c1.Project(pt2)
-                if proj and pt2.DistanceTo(proj.XYZPoint) < 0.05: return True
-            except Exception: pass
+            proj1 = c1.Project(pt2)
+            if proj1 and pt2.DistanceTo(proj1.XYZPoint) < 0.05: return True
+            
         try:
+            # Intersect - единственный метод в Revit API, который иногда падает сам по себе 
+            # на сложных сплайнах, поэтому тут локальный try оставляем оправданно.
             res = c1.Intersect(c2)
             if res == SetComparisonResult.Overlap or res == SetComparisonResult.Subset: 
                 return True
-        except Exception: pass
-        
-    elif is_p1 and not is_p2:
+        except Exception: 
+            pass
+            
+    # Труба + Колодец
+    elif is_p1 and not is_p2 and c1:
         bb = v2.get_BoundingBox(None)
         if bb:
-            c1 = v1.Location.Curve
             for i in range(2):
                 pt = c1.GetEndPoint(i)
-                if bb.Min.X - 0.05 <= pt.X <= bb.Max.X + 0.05 and \
-                   bb.Min.Y - 0.05 <= pt.Y <= bb.Max.Y + 0.05 and \
-                   bb.Min.Z - 0.05 <= pt.Z <= bb.Max.Z + 0.05:
+                if (bb.Min.X - 0.05 <= pt.X <= bb.Max.X + 0.05 and 
+                    bb.Min.Y - 0.05 <= pt.Y <= bb.Max.Y + 0.05 and 
+                    bb.Min.Z - 0.05 <= pt.Z <= bb.Max.Z + 0.05):
                     return True
                     
-    elif not is_p1 and is_p2:
+    # Колодец + Труба
+    elif not is_p1 and is_p2 and c2:
         bb = v1.get_BoundingBox(None)
         if bb:
-            c2 = v2.Location.Curve
             for i in range(2):
                 pt = c2.GetEndPoint(i)
-                if bb.Min.X - 0.05 <= pt.X <= bb.Max.X + 0.05 and \
-                   bb.Min.Y - 0.05 <= pt.Y <= bb.Max.Y + 0.05 and \
-                   bb.Min.Z - 0.05 <= pt.Z <= bb.Max.Z + 0.05:
+                if (bb.Min.X - 0.05 <= pt.X <= bb.Max.X + 0.05 and 
+                    bb.Min.Y - 0.05 <= pt.Y <= bb.Max.Y + 0.05 and 
+                    bb.Min.Z - 0.05 <= pt.Z <= bb.Max.Z + 0.05):
                     return True
                     
     return False
