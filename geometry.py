@@ -221,3 +221,40 @@ def get_dir(s):
     if s > 0.5: 
         return 1
     return 0
+
+def get_surface_z_by_raycast(P0, edges):
+    """
+    Вычисляет 3D-отметку поверхности в точке P0 методом обратных взвешенных 
+    расстояний (IDW), пуская 8 лучей во все стороны.
+    """
+    if not edges:
+        return None
+        
+    # Пускаем лучи: Вправо, Влево, Вверх, Вниз и по диагоналям
+    dirs = [
+        XYZ(1,0,0), XYZ(-1,0,0), XYZ(0,1,0), XYZ(0,-1,0),
+        XYZ(0.7071, 0.7071, 0), XYZ(-0.7071, 0.7071, 0), 
+        XYZ(0.7071, -0.7071, 0), XYZ(-0.7071, -0.7071, 0)
+    ]
+    
+    hits = []
+    for D in dirs:
+        t, z = get_first_intersection(P0, D, edges)
+        # Ограничиваем поиск разумным радиусом (около 150 метров)
+        if t is not None and t < 500.0: 
+            hits.append((t, z))
+            
+    if not hits:
+        return None
+        
+    # Если колодец стоит прямо на линии горизонтали (или экстремально близко к ней)
+    for t, z in hits:
+        if t < 0.05:
+            return z
+            
+    # Магия IDW: Взвешенное усреднение. 
+    # Формула: Z = Sum(Z_i / t_i) / Sum(1 / t_i)
+    w_sum = sum(1.0 / t for t, z in hits)
+    z_weighted = sum((1.0 / t) * z for t, z in hits) / w_sum
+    
+    return z_weighted

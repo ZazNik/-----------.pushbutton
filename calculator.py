@@ -63,7 +63,10 @@ class ProfileCalculator:
             for p in o_pipes[1:]:
                 e0, e1 = p.Location.Curve.GetEndPoint(0), p.Location.Curve.GetEndPoint(1)
                 pt_s, pt_e = (e0, e1) if e0.DistanceTo(ref_pt) < e1.DistanceTo(ref_pt) else (e1, e0)
-                g_len = math.sqrt((ref_pt.X-pt_s.X)**2 + (ref_pt.Y-pt_s.Y)**2)
+                
+                # Игнорируем физические разрывы (колодцы), сшиваем трубы стык в стык на профиле!
+                g_len = 0.0 
+                
                 r_segs.append({"s": pt_s, "e": pt_e, "g": g_len, "d": revit_utils.get_diameter(p), "pipe": p, "abbr": revit_utils.get_pipe_abbr(p, doc)})
                 ref_pt = pt_e
 
@@ -95,9 +98,16 @@ class ProfileCalculator:
                     
             cur_x += seg["g"]
             x1 = cur_x
-            plen = math.sqrt((seg["s"].X-seg["e"].X)**2 + (seg["s"].Y-seg["e"].Y)**2)
-            x2 = cur_x + plen
             
+            # Жестко берем системную длину 3D-трубы из Revit
+            len_p = seg["pipe"].get_Parameter(DB.BuiltInParameter.CURVE_ELEM_LENGTH)
+            if len_p and len_p.HasValue:
+                plen = len_p.AsDouble()
+            else:
+                plen = math.sqrt((seg["s"].X-seg["e"].X)**2 + (seg["s"].Y-seg["e"].Y)**2)
+            
+            x2 = cur_x + plen
+        
             pts_b.extend(geometry.slice_edges(seg["s"], seg["e"], x1, e_blk))
             if e_red: pts_r.extend(geometry.slice_edges(seg["s"], seg["e"], x1, e_red))
             for bp in geometry.slice_edges(seg["s"], seg["e"], x1, e_blk_bnd): bound_xs.append(bp["x"])
@@ -173,24 +183,50 @@ class ProfileCalculator:
         # Предварительно собираем данные по колодцам для привязки пересечек И ординат
         mh_data = []
         mh_xs = []
-        mh_snap_data = [] # ОБЪЯВЛЯЕМ ПЕРЕМЕННУЮ ЗДЕСЬ, ЧТОБЫ ЕЁ ВИДЕЛ ВЕСЬ СКРИПТ
+        mh_snap_data = [] 
         
+        # Колодцы на профиле (жесткая привязка к 2D-стыкам труб)
+        real_mhs = []
         for el in manholes:
             bb = el.get_BoundingBox(None)
             if bb:
-                c_pt = (bb.Min + bb.Max) / 2.0
-                mx = geometry.get_profile_x(c_pt, raw_d)
-                mh_xs.append(mx)
-                mh_data.append({"el": el, "mx": mx, "c_pt": c_pt})
+                cen = (bb.Min + bb.Max) / 2.0
                 
-                # Вычисляем диагональ BoundingBox в плане (реальный размер колодца)
+                # Ищем ближайший конец трубы в 3D, чтобы примагнитить колодец к нему
+                best_x = 0
+                min_dist = 1000000.0
+                for d in raw_d:
+                    if d.get("is_vert", False): continue
+                    
+                    dist_s = cen.DistanceTo(d["pt_s"]) 
+                    dist_e = cen.DistanceTo(d["pt_e"]) 
+                    
+                    if dist_s < min_dist:
+                        min_dist = dist_s
+                        best_x = d["x1"]
+                    if dist_e < min_dist:
+                        min_dist = dist_e
+                        best_x = d["x2"]
+                
+                # СТРОГО ВНЕ ЦИКЛА ТРУБ НАПОЛНЯЕМ ВСЕ СЛУЖЕБНЫЕ МАССИВЫ:
+                # --- НОВАЯ ЛОГИКА 3D-RAYCAST ДЛЯ ОТМЕТОК ЗЕМЛИ КОЛОДЦА ---
+                z_b_precise = geometry.get_surface_z_by_raycast(cen, e_blk)
+                z_r_precise = geometry.get_surface_z_by_raycast(cen, e_red) if e_red else z_b_precise
+                
+                real_mhs.append({
+                    "el": el, 
+                    "mx": best_x,
+                    "z_b": z_b_precise, # Сохраняем точную черную землю
+                    "z_r": z_r_precise  # Сохраняем точную красную землю
+                })
+                mh_data.append({"el": el, "mx": best_x, "c_pt": cen})
+                
                 r_ft = math.sqrt((bb.Max.X - bb.Min.X)**2 + (bb.Max.Y - bb.Min.Y)**2) / 2.0
-                # Оставляем запас всего 15 см (а не 1.5 м!), чтобы не засасывать соседние колодцы
                 mh_snap_data.append({
-                    "mx": mx, 
+                    "mx": best_x, 
                     "r": r_ft + (0.15 / 0.3048),
-                    "cx": c_pt.X,
-                    "cy": c_pt.Y
+                    "cx": cen.X,
+                    "cy": cen.Y
                 })
 
         for cp in all_doc_pipes:
@@ -255,6 +291,29 @@ class ProfileCalculator:
 
         cln_b = [p for i, p in enumerate(sorted(pts_b, key=lambda x: x["x"])) if i==0 or p["x"]-pts_b[i-1]["x"]>0.01]
         cln_r = [p for i, p in enumerate(sorted(pts_r, key=lambda x: x["x"])) if i==0 or p["x"]-pts_r[i-1]["x"]>0.01]
+
+        # --- ИНЪЕКЦИЯ ТОЧНЫХ ОТМЕТОК КОЛОДЦЕВ В ЛИНИЮ ЗЕМЛИ ---
+        def inject_precise_z(cln, is_red=False):
+            if not cln: return []
+            new_cln = []
+            for p in cln:
+                # Удаляем старые точки сканирования, которые слишком близко к оси колодца (ближе 10 см)
+                # Это защитит чертеж от резких "зубцов" (микро-скачков) линии земли
+                if not any(abs(p["x"] - rm["mx"]) < 0.1 for rm in real_mhs):
+                    new_cln.append(p)
+                    
+            # Вставляем наши идеальные 3D Raycast отметки
+            for rm in real_mhs:
+                z_val = rm.get("z_r") if is_red else rm.get("z_b")
+                if z_val is not None:
+                    new_cln.append({"x": rm["mx"], "z": z_val})
+                    
+            # Заново сортируем линию слева направо
+            new_cln.sort(key=lambda item: item["x"])
+            return new_cln
+
+        cln_b = inject_precise_z(cln_b, False)
+        if cln_r: cln_r = inject_precise_z(cln_r, True)
 
         raw_xs = []
         for d in raw_d:
@@ -455,6 +514,7 @@ class ProfileCalculator:
             "cln_b": cln_b,
             "cln_r": cln_r,
             "manholes": manholes,
+            "real_mhs": real_mhs,
             "final_xs": final_xs,
             "cross_pipes": cross_pipes,
             "base_z": base_z,

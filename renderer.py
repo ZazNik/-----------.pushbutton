@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import math
+import System  # <--- Добавили вот эту строку
 from pyrevit import DB, forms
 import profile_builder
 import geometry
@@ -24,6 +25,7 @@ class ProfileRenderer:
         cln_b = self.data["cln_b"]
         cln_r = self.data["cln_r"]
         manholes = self.data["manholes"]
+        real_mhs = self.data.get("real_mhs", [])
         final_xs = self.data["final_xs"]
         cross_pipes = self.data["cross_pipes"]
         base_z = self.data["base_z"]
@@ -46,37 +48,33 @@ class ProfileRenderer:
         new_view = profile_builder.create_drafting_view(doc, form.view_name, form.scale_x)
 
         # Вычисляем интервалы колодцев для подрезки по их РЕАЛЬНЫМ габаритам
+        # Вычисляем интервалы колодцев для подрезки по их РЕАЛЬНЫМ габаритам
         mh_intervals = []
-        real_mhs = []
-        for el in manholes:
-            bb = el.get_BoundingBox(None)
-            if not bb: continue
-            mx = geometry.get_profile_x((bb.Min + bb.Max) / 2.0, raw_d)
+        # Мы НЕ обнуляем real_mhs, а используем готовый из calculator.py!
+        
+        for rm in real_mhs:
+            el = rm["el"]
+            real_x = rm["mx"]
             
-            # Ищем самую БЛИЖАЙШУЮ ординату с жестким допуском 0.5м
-            valid_fx = [fx for fx in final_xs if abs(fx - mx) < (0.5 / 0.3048)]
-            real_x = min(valid_fx, key=lambda fx: abs(fx - mx)) if valid_fx else None
-            
-            if real_x is not None:
-                # Убойная проверка на ковер по всем возможным параметрам
-                is_cover = False
-                names = [el.Name.lower() if el.Name else ""]
-                el_type = doc.GetElement(el.GetTypeId()) if el.GetTypeId() != DB.ElementId.InvalidElementId else None
-                if el_type:
-                    if hasattr(el_type, "FamilyName") and el_type.FamilyName: names.append(el_type.FamilyName.lower())
-                    sym_name = el_type.get_Parameter(DB.BuiltInParameter.SYMBOL_NAME_PARAM)
-                    if sym_name and sym_name.HasValue: names.append(sym_name.AsString().lower())
-                if any(KW_COVER in n or KW_COVER_ALT in n for n in names):
-                    is_cover = True
+            # Убойная проверка на ковер по всем возможным параметрам
+            is_cover = False
+            names = [el.Name.lower() if el.Name else ""]
+            el_type = doc.GetElement(el.GetTypeId()) if el.GetTypeId() != DB.ElementId.InvalidElementId else None
+            if el_type:
+                if hasattr(el_type, "FamilyName") and el_type.FamilyName: names.append(el_type.FamilyName.lower())
+                sym_name = el_type.get_Parameter(DB.BuiltInParameter.SYMBOL_NAME_PARAM)
+                if sym_name and sym_name.HasValue: names.append(sym_name.AsString().lower())
+            if any(KW_COVER in n or KW_COVER_ALT in n for n in names):
+                is_cover = True
 
-                w_ft = 0.5 / 0.3048 
-                
-                # Если это НЕ ковер, добавляем зону вырезания труб (чтобы скрыть их внутри колодца)
-                # Коверы трубы не режут, чтобы вертикальный стояк дошел до самого верха!
-                if not is_cover:
-                    mh_intervals.append((real_x - w_ft, real_x + w_ft))
-                    
-                real_mhs.append({"mx": real_x, "w": w_ft})
+            w_ft = 0.5 / 0.3048 
+            rm["w"] = w_ft # Добавляем ширину прямо в наш словарь
+            
+            # Если это НЕ ковер, добавляем зону вырезания труб
+            if not is_cover:
+                mh_intervals.append((real_x - w_ft, real_x + w_ft))
+
+        # Локальные функции подрезки
 
         # Локальные функции подрезки
         def extend_to_mhs(pt, other_pt):
@@ -175,39 +173,36 @@ class ProfileRenderer:
         draw_ground(cln_b, s_blk)
         if cln_r: draw_ground(cln_r, s_red)
 
-        # Отрисовка колодцев
-        for el in manholes:
+        # Отрисовка колодцев (используем строгие примагниченные координаты)
+        for rm in real_mhs:
+            el = rm["el"]
+            real_x = rm["mx"]
+            
             bb = el.get_BoundingBox(None)
             if not bb: continue
-            mx = geometry.get_profile_x((bb.Min + bb.Max) / 2.0, raw_d)
             
-            # Аналогичный строгий поиск ближайшей оси
-            valid_fx = [fx for fx in final_xs if abs(fx - mx) < (0.5 / 0.3048)]
-            real_x = min(valid_fx, key=lambda fx: abs(fx - mx)) if valid_fx else None
-            
-            if real_x is not None:
-                # Та же надежная проверка
-                is_cover = False
-                names = [el.Name.lower() if el.Name else ""]
-                el_type = doc.GetElement(el.GetTypeId()) if el.GetTypeId() != DB.ElementId.InvalidElementId else None
-                if el_type:
-                    if hasattr(el_type, "FamilyName") and el_type.FamilyName: names.append(el_type.FamilyName.lower())
-                    sym_name = el_type.get_Parameter(DB.BuiltInParameter.SYMBOL_NAME_PARAM)
-                    if sym_name and sym_name.HasValue: names.append(sym_name.AsString().lower())
-                if any(KW_COVER in n or KW_COVER_ALT in n for n in names):
-                    is_cover = True
+            # Та же надежная проверка
+            is_cover = False
+            names = [el.Name.lower() if el.Name else ""]
+            el_type = doc.GetElement(el.GetTypeId()) if el.GetTypeId() != DB.ElementId.InvalidElementId else None
+            if el_type:
+                if hasattr(el_type, "FamilyName") and el_type.FamilyName: names.append(el_type.FamilyName.lower())
+                sym_name = el_type.get_Parameter(DB.BuiltInParameter.SYMBOL_NAME_PARAM)
+                if sym_name and sym_name.HasValue: names.append(sym_name.AsString().lower())
+            if any(KW_COVER in n or KW_COVER_ALT in n for n in names):
+                is_cover = True
 
-                # Ширина для всех одинаковая (1000 мм)
-                fixed_width = 1.0 / 0.3048
-                
-                if is_cover:
-                    # Для ковера фиксируем только ВЫСОТУ (200 мм от верхней крышки)
-                    z_top = bb.Max.Z
-                    z_bot = z_top - (0.2 / 0.3048) # 0.2 метра (200 мм)
-                    profile_builder.draw_manhole(doc, new_view, real_x, fixed_width, z_bot, z_top, base_z, DISTORTION_Y, s_well)
-                else:
-                    # Обычный колодец рисуется на всю глубину 
-                    profile_builder.draw_manhole(doc, new_view, real_x, fixed_width, bb.Min.Z, bb.Max.Z, base_z, DISTORTION_Y, s_well)
+            # Ширина для всех одинаковая (1000 мм)
+            fixed_width = 1.0 / 0.3048
+            
+            if is_cover:
+                # Для ковера фиксируем только ВЫСОТУ (200 мм от верхней крышки)
+                z_top = bb.Max.Z
+                z_bot = z_top - (0.2 / 0.3048) # 0.2 метра (200 мм)
+                profile_builder.draw_manhole(doc, new_view, real_x, fixed_width, z_bot, z_top, base_z, DISTORTION_Y, s_well)
+            else:
+                # Обычный колодец рисуется на всю глубину 
+                profile_builder.draw_manhole(doc, new_view, real_x, fixed_width, bb.Min.Z, bb.Max.Z, base_z, DISTORTION_Y, s_well)
 
         # ==========================================
         # 8. ПОДВАЛ ГОСТ (Таблица)
@@ -216,8 +211,7 @@ class ProfileRenderer:
         txt_id = txt_type.Id if txt_type else DB.ElementId.InvalidElementId
         
         row_heights_mm = [15, 15, 15, 15, 15, 15, 10, 10, 10, 10, 15]
-        labels = ["Отметка земли проектная, м", "Отметка земли фактическая, м", "Отметка дна траншеи, м", "Отметка верха трубы, м", "Глубина траншеи, м", "Обозначение трубы и тип изоляции", "Основание", "Уклон, ‰ / Длина, м", "Расстояние, м", "Пикет", "Развернутый план"]
-        
+        labels = ["Отметка земли проектная, м", "Отметка земли фактическая, м", "Отметка дна траншеи, м", "Отметка низа трубы, м", "Глубина траншеи, м", "Обозначение трубы и тип изоляции", "Основание", "Уклон, ‰ / Длина, м", "Расстояние, м", "Пикет", "Развернутый план"]       
         y_lines = [0.0] 
         for h in row_heights_mm: y_lines.append(y_lines[-1] - geometry.paper_mm_to_ft(h, form.scale_x))
         
@@ -225,8 +219,8 @@ class ProfileRenderer:
         x_data_end = final_xs[-1]
         x_table_end = x_data_end + (5.0 / 0.3048)
         
-        W_gap = geometry.paper_mm_to_ft(20, form.scale_x)
-        W_col_left = geometry.paper_mm_to_ft(40, form.scale_x) 
+        W_gap = geometry.paper_mm_to_ft(15, form.scale_x)      # Отступ от таблицы до трассы (можно сделать поменьше)
+        W_col_left = geometry.paper_mm_to_ft(60, form.scale_x) # <--- РАСШИРИЛИ БОКОВИК с 40 до 60 мм! 
         x_labels_right = x_data_start - W_gap
         x_labels_left = x_labels_right - W_col_left
         
@@ -243,8 +237,14 @@ class ProfileRenderer:
         profile_builder.draw_line(doc, new_view, x_arr, y_arr, x_arr + dx_arr, y_arr + dy_arr, s_grid)
         
         profile_builder.place_text(doc, new_view.Id, x_arr - w_line/2.0, y_arr + h_stem + geometry.paper_mm_to_ft(2, form.scale_x), "{:.2f}".format(base_z_m).replace('.', ','), 0.0, txt_id)
-        profile_builder.place_text(doc, new_view.Id, x_labels_left + geometry.paper_mm_to_ft(5, form.scale_x), y_arr + geometry.paper_mm_to_ft(20, form.scale_x), "МГ 1:{}".format(form.scale_x), 0.0, txt_id, halign=DB.HorizontalTextAlignment.Left)
-        profile_builder.place_text(doc, new_view.Id, x_labels_left + geometry.paper_mm_to_ft(5, form.scale_x), y_arr + geometry.paper_mm_to_ft(15, form.scale_x), "МВ 1:{}".format(form.scale_y), 0.0, txt_id, halign=DB.HorizontalTextAlignment.Left)
+        # Красивое ГОСТовое оформление масштабов
+        # Прижимаем жестко к левой линии боковика (с микро-отступом 2 мм)
+        offset_x = x_labels_left + geometry.paper_mm_to_ft(2, form.scale_x) 
+        
+        # Опускаем текст вниз (будет лежать аккуратно на 20, 15 и 10 мм над верхней линией таблицы)
+        profile_builder.place_text(doc, new_view.Id, offset_x, y_arr + geometry.paper_mm_to_ft(20, form.scale_x), "Масштабы:", 0.0, txt_id, halign=DB.HorizontalTextAlignment.Left)
+        profile_builder.place_text(doc, new_view.Id, offset_x, y_arr + geometry.paper_mm_to_ft(15, form.scale_x), "горизонтальный 1:{}".format(form.scale_x), 0.0, txt_id, halign=DB.HorizontalTextAlignment.Left)
+        profile_builder.place_text(doc, new_view.Id, offset_x, y_arr + geometry.paper_mm_to_ft(10, form.scale_x), "вертикальный   1:{}".format(form.scale_y), 0.0, txt_id, halign=DB.HorizontalTextAlignment.Left)
 
         for i, lab in enumerate(labels):
             if i == 7: 
@@ -258,8 +258,17 @@ class ProfileRenderer:
         profile_builder.draw_line(doc, new_view, x_labels_left, y_lines[0], x_labels_left, y_lines[-1], s_grid) 
         profile_builder.draw_line(doc, new_view, x_labels_right, y_lines[0], x_labels_right, y_lines[-1], s_grid) 
         profile_builder.draw_line(doc, new_view, x_table_end, y_lines[0], x_table_end, y_lines[-1], s_grid) 
-        profile_builder.draw_line(doc, new_view, x_data_start, y_lines[5], x_data_start, y_lines[-1], s_grid)
-        profile_builder.draw_line(doc, new_view, x_data_end, y_lines[5], x_data_end, y_lines[-1], s_grid)
+        # Проверяем, совпадают ли координаты начала и конца трассы с координатами колодцев
+        start_has_mh = any(abs(x_data_start - rm["mx"]) < 0.01 for rm in real_mhs)
+        end_has_mh = any(abs(x_data_end - rm["mx"]) < 0.01 for rm in real_mhs)
+        
+        # Если есть колодец - останавливаем линию на y_lines[10] (над развернутым планом). 
+        # Если нет - тянем до самого низа y_lines[-1], чтобы закрыть таблицу.
+        y_bot_start = y_lines[10] if start_has_mh else y_lines[-1]
+        y_bot_end = y_lines[10] if end_has_mh else y_lines[-1]
+        
+        profile_builder.draw_line(doc, new_view, x_data_start, y_lines[5], x_data_start, y_bot_start, s_grid)
+        profile_builder.draw_line(doc, new_view, x_data_end, y_lines[5], x_data_end, y_bot_end, s_grid)
 
         # Шкала высот
         temp_all_z = list(all_z)
@@ -368,15 +377,41 @@ class ProfileRenderer:
             x1, x2 = final_xs[i], final_xs[i+1]
             mid_x = (x1 + x2) / 2.0
             best_desc, best_base = DEF_DESC, "Основание не задано H=100 мм"
+            best_pipe = None
+            
             for d in raw_d:
                 if not d.get("is_vert", False) and min(d["x1"], d["x2"]) <= mid_x <= max(d["x1"], d["x2"]):
                     best_desc, best_base = d.get("desc", DEF_DESC), d.get("base_text", "Основание не задано H=100 мм")
+                    best_pipe = d
                     break
+                    
             desc_segments.append({"x1": x1, "x2": x2, "desc": best_desc})
             base_segments.append({"x1": x1, "x2": x2, "base_text": best_base})
-            z1 = geometry.get_horiz_pipe_z_center(x1, raw_d)
-            z2 = geometry.get_horiz_pipe_z_center(x2, raw_d)
-            segments.append({"x1": x1, "x2": x2, "L": float("{:.1f}".format((x2 - x1) * 0.3048)), "slope": (z2 - z1) * 0.3048 / ((x2 - x1) * 0.3048) * 1000.0 if (x2 - x1) > 0.001 else 0.0})
+            
+            L_m = float("{:.1f}".format((x2 - x1) * 0.3048))
+            
+            # ЖЕСТКИЙ РАСЧЕТ УКЛОНА ПО КОНКРЕТНОЙ ТРУБЕ (Исключает путаницу на перепадных колодцах)
+            if best_pipe:
+                px1, pz1, px2, pz2 = best_pipe["x1"], best_pipe["z1"], best_pipe["x2"], best_pipe["z2"]
+                d_out = best_pipe["d_outer"]
+                
+                # Вычисляем точные Z центра трубы на границах участка x1 и x2
+                if abs(px2 - px1) > 1e-6:
+                    z_cen_1 = pz1 + (x1 - px1) * (pz2 - pz1) / (px2 - px1)
+                    z_cen_2 = pz1 + (x2 - px1) * (pz2 - pz1) / (px2 - px1)
+                else:
+                    z_cen_1 = z_cen_2 = (pz1 + pz2) / 2.0
+                    
+                # Округляем до 2 знаков (до сантиметров), ТОЧНО так же, как они печатаются в таблицу!
+                z_bot_1 = round((z_cen_1 - (d_out / 2.0)) * 0.3048 + 1e-9, 2)
+                z_bot_2 = round((z_cen_2 - (d_out / 2.0)) * 0.3048 + 1e-9, 2)
+                
+                # Честный калькуляторный расчет
+                calc_slope = (z_bot_2 - z_bot_1) / L_m * 1000.0 if L_m > 0.001 else 0.0
+            else:
+                calc_slope = 0.0
+                
+            segments.append({"x1": x1, "x2": x2, "L": L_m, "slope": calc_slope})
 
         # Обычная группировка для текстов (Обозначение трубы и Основание)
         def group_segs(segs, key):
@@ -395,35 +430,11 @@ class ProfileRenderer:
         base_groups, base_boundaries = group_segs(base_segments, "base_text")
 
         # --- УМНАЯ ЛОГИКА ГРУППИРОВКИ УКЛОНОВ ---
-        # Объединяем, если направления совпадают И разница уклонов <= 5 промилле.
-        # Также "проглатываем" нулевые уклоны (колодцы и вертикальные стыки).
+        # ВРЕМЕННО ОТКЛЮЧЕНО: Каждый участок выводится отдельно, без слияния
         grouped_segments = []
-        if segments:
-            cur = segments[0].copy()
-            cur["orig_slope"] = cur["slope"]
-            for s in segments[1:]:
-                s_slope = s["slope"]
-                c_slope = cur["orig_slope"]
-                
-                is_zero_s = abs(s_slope) <= 0.5
-                is_zero_c = abs(c_slope) <= 0.5
-                
-                same_dir = geometry.get_dir(s_slope) == geometry.get_dir(c_slope)
-                slope_diff = abs(abs(s_slope) - abs(c_slope))
-                
-                # Условия слияния ячеек:
-                if is_zero_s or is_zero_c or (same_dir and slope_diff <= 5.0):
-                    cur["x2"] = s["x2"]
-                    cur["L"] = round(cur["L"] + s["L"], 1)
-                    # Если текущий доминантный уклон был нулевым, перехватываем новый
-                    if is_zero_c and not is_zero_s:
-                        cur["orig_slope"] = s_slope
-                else:
-                    # Разница больше 5 промилле - создаем отдельный участок!
-                    grouped_segments.append(cur)
-                    cur = s.copy()
-                    cur["orig_slope"] = cur["slope"]
-            grouped_segments.append(cur)
+        for s in segments:
+            s["orig_slope"] = s["slope"]
+            grouped_segments.append(s)
             
         slope_boundaries = set([g["x1"] for g in grouped_segments] + [g["x2"] for g in grouped_segments])
 
@@ -440,18 +451,39 @@ class ProfileRenderer:
         for i in range(len(final_xs) - 1): picket_dists.append(picket_dists[-1] + float("{:.1f}".format((final_xs[i+1] - final_xs[i]) * 0.3048)))
         
         for idx, x in enumerate(final_xs):
+            # Базовая 1D-интерполяция вдоль трассы
             z_b_val = geometry.get_z_on_profile(x, cln_b)
             z_r_val = geometry.get_z_on_profile(x, cln_r) if cln_r else z_b_val
+            
+            # --- УМНАЯ ЗАМЕНА ОТМЕТОК НА КОЛОДЦАХ (Точный 3D Raycast) ---
+            for rm in real_mhs:
+                if abs(x - rm["mx"]) < 0.01: # Если текущая ордината - это колодец
+                    if rm.get("z_b") is not None: z_b_val = rm["z_b"]
+                    if rm.get("z_r") is not None: z_r_val = rm["z_r"]
+                    break
+                    
             z_cen, d_val, cushion_m = geometry.get_exact_pipe_data(x, raw_d)
             
-            z_top_text = round((z_cen + (d_val / 2.0)) * 0.3048 + 1e-9, 2)
-            z_bot_text = round(z_top_text - round(d_val * 0.3048 + 1e-9, 3) - round(cushion_m, 3) + 1e-9, 2)
+            # УМНЫЙ ПОИСК: Находим отметки лотков отдельно для входящих и исходящих труб на пикете
+            inc_bots = [d["z2"] - (d["d_outer"] / 2.0) for d in raw_d if not d.get("is_vert", False) and abs(d["x2"] - x) < 0.01]
+            out_bots = [d["z1"] - (d["d_outer"] / 2.0) for d in raw_d if not d.get("is_vert", False) and abs(d["x1"] - x) < 0.01]
+            
+            z_in_m = round(inc_bots[0] * 0.3048 + 1e-9, 2) if inc_bots else None
+            z_out_m = round(out_bots[0] * 0.3048 + 1e-9, 2) if out_bots else None
+            
+            # Для определения отметки дна траншеи и глубины берем самый низкий лоток (максимальное заглубление)
+            avail_bots = [b for b in [z_in_m, z_out_m] if b is not None]
+            main_bot_m = min(avail_bots) if avail_bots else round((z_cen - (d_val / 2.0)) * 0.3048 + 1e-9, 2)
+            
+            # Дно траншеи = минимальный лоток минус подушка основания
+            z_trench_bot_text = round(main_bot_m - round(cushion_m, 3) + 1e-9, 2)
             
             z_b_str = "{:.2f}".format(round(z_b_val * 0.3048 + 1e-9, 2)).replace('.', ',') if z_b_val is not None else ""
             z_r_text = round(z_r_val * 0.3048 + 1e-9, 2) if z_r_val is not None else (round(z_b_val * 0.3048 + 1e-9, 2) if z_b_val else 0)
             z_r_str = "{:.2f}".format(z_r_text).replace('.', ',') if z_r_val is not None else ""
             
-            depth_text = round(z_r_text - z_bot_text + 1e-9, 2)
+            # Глубина траншеи от Красной земли до Дна траншеи
+            depth_text = round(z_r_text - z_trench_bot_text + 1e-9, 2)
             
             max_ground_z = max([v for v in [z_b_val, z_r_val] if v is not None] or [cln_b[-1]["z"]])
             profile_builder.draw_line(doc, new_view, x, y_lines[0], x, (max_ground_z - base_z) * DISTORTION_Y, s_ord)
@@ -459,31 +491,37 @@ class ProfileRenderer:
             ang = math.pi / 2.0
             offset = geometry.paper_mm_to_ft(1.5, form.scale_x) 
             
+            # Вывод стандартных строк
             if z_r_str: profile_builder.place_text(doc, new_view.Id, x, (y_lines[0] + y_lines[1])/2.0, z_r_str, ang, txt_id)
             if z_b_str: profile_builder.place_text(doc, new_view.Id, x, (y_lines[1] + y_lines[2])/2.0, z_b_str, ang, txt_id)
-            profile_builder.place_text(doc, new_view.Id, x, (y_lines[2] + y_lines[3])/2.0, "{:.2f}".format(z_bot_text).replace('.', ','), ang, txt_id)
-            profile_builder.place_text(doc, new_view.Id, x, (y_lines[3] + y_lines[4])/2.0, "{:.2f}".format(z_top_text).replace('.', ','), ang, txt_id)
+            profile_builder.place_text(doc, new_view.Id, x, (y_lines[2] + y_lines[3])/2.0, "{:.2f}".format(z_trench_bot_text).replace('.', ','), ang, txt_id)
+            
+            # ЛОГИКА ОТОБРАЖЕНИЯ ОТМЕТОК НИЗА ТРУБ (ДВЕ РЯДОМ ИЛИ ОДНА ПО ЦЕНТРУ)
+            y_pipe_row_center = (y_lines[3] + y_lines[4]) / 2.0
+            
+            if z_in_m is not None and z_out_m is not None and abs(z_in_m - z_out_m) >= 0.01:
+                # Если отметки на колодце отличаются -> пишем две отметки по бокам от линии ординаты
+                str_in = "{:.2f}".format(z_in_m).replace('.', ',')
+                str_out = "{:.2f}".format(z_out_m).replace('.', ',')
+                profile_builder.place_text(doc, new_view.Id, x - offset, y_pipe_row_center, str_in, ang, txt_id) # Входящая слева
+                profile_builder.place_text(doc, new_view.Id, x + offset, y_pipe_row_center, str_out, ang, txt_id) # Исходящая справа
+            else:
+                # Если отметки одинаковые (или труба только одна) -> пишем одну строго по центру линии
+                single_bot = z_in_m if z_in_m is not None else (z_out_m if z_out_m is not None else main_bot_m)
+                str_single = "{:.2f}".format(single_bot).replace('.', ',')
+                profile_builder.place_text(doc, new_view.Id, x, y_pipe_row_center, str_single, ang, txt_id)
+                
             profile_builder.place_text(doc, new_view.Id, x, (y_lines[4] + y_lines[5])/2.0, "{:.2f}".format(depth_text).replace('.', ','), ang, txt_id)
             profile_builder.place_text(doc, new_view.Id, x + offset, (y_lines[9] + y_lines[10])/2.0, "ПК{}+{:.1f}".format(int(picket_dists[idx] // 100), picket_dists[idx] % 100).replace('.', ','), ang, txt_id)
 
         for g in grouped_segments:
             x_start, x_end, L_m = g["x1"], g["x2"], g["L"]
             
-            # ЧЕСТНЫЙ РАСЧЕТ УКЛОНА (как требует Нормоконтроль):
-            # Вычисляем дельту строго по округленным отметкам, которые пишутся в таблицу (Отметка верха трубы)
-            z1_cen, d1, _ = geometry.get_exact_pipe_data(x_start, raw_d)
-            z2_cen, d2, _ = geometry.get_exact_pipe_data(x_end, raw_d)
-            
-            z1_text = round((z1_cen + (d1 / 2.0)) * 0.3048 + 1e-9, 2)
-            z2_text = round((z2_cen + (d2 / 2.0)) * 0.3048 + 1e-9, 2)
-            
-            if L_m > 0.001:
-                calc_slope = (z2_text - z1_text) / L_m * 1000.0
-            else:
-                calc_slope = 0.0
+            # Берем готовый идеально рассчитанный уклон из массива
+            calc_slope = g["slope"]
                 
-            # Направление (вверх/вниз/прямо) берем из исходной геометрии (orig_slope), 
-            # чтобы визуальная линия в таблице не сломалась из-за микро-погрешностей
+            # Направление (вверх/вниз/прямо) берем из исходной геометрии, 
+            # чтобы визуальная линия в таблице не сломалась
             orig_slope = g.get("orig_slope", g["slope"])
             dir_val = geometry.get_dir(orig_slope)
             
@@ -506,5 +544,19 @@ class ProfileRenderer:
 
         for i in range(len(final_xs) - 1):
             profile_builder.place_text(doc, new_view.Id, (final_xs[i] + final_xs[i+1]) / 2.0, (y_lines[8] + y_lines[9])/2.0, geometry.fmt_len(float("{:.1f}".format((final_xs[i+1] - final_xs[i]) * 0.3048))), 0.0, txt_id)
+
+        # --- 9. НОМЕРА КОЛОДЦЕВ В ТАБЛИЦУ (Развернутый план) ---
+        param_guid = System.Guid(PRM_MH_GUID)
+        
+        for rm in real_mhs:
+            el = rm["el"]
+            real_x = rm["mx"] # Берем идеальную координату прямо из нашей базы
+            
+            p_num = el.get_Parameter(param_guid)
+            if p_num and p_num.HasValue:
+                mh_number = p_num.AsString() or p_num.AsValueString()
+                if mh_number:
+                    y_center = (y_lines[10] + y_lines[11]) / 2.0
+                    profile_builder.place_text(doc, new_view.Id, real_x, y_center, mh_number, 0.0, txt_id)
 
         forms.alert("Профиль успешно построен!\nВид: {}".format(new_view.Name), warn_icon=False)
