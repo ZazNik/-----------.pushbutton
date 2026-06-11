@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import math
+import System
 from pyrevit import DB
 import revit_utils
 import geometry
@@ -131,7 +132,9 @@ class ProfileCalculator:
             size_p = seg["pipe"].LookupParameter(PRM_SIZE) or seg["pipe"].get_Parameter(DB.BuiltInParameter.RBS_CALCULATED_SIZE_STRING)
             if size_p and size_p.HasValue: size_str = size_p.AsString()
                 
-            thick_p = seg["pipe"].LookupParameter(PRM_THICKNESS) or (doc.GetElement(p_type_id).LookupParameter(PRM_THICKNESS) if p_type_id != DB.ElementId.InvalidElementId else None)
+            # Ищем Толщину стенки строго по GUID (сначала в экземпляре, затем в типе)
+            guid_thick = System.Guid(PRM_THICKNESS_GUID)
+            thick_p = seg["pipe"].get_Parameter(guid_thick) or (doc.GetElement(p_type_id).get_Parameter(guid_thick) if p_type_id != DB.ElementId.InvalidElementId else None)
             if thick_p and thick_p.HasValue:
                 if thick_p.StorageType == DB.StorageType.Double:
                     thick_str = "{:.1f}".format(thick_p.AsDouble() * 304.8).replace('.', ',').rstrip(',0')
@@ -140,28 +143,33 @@ class ProfileCalculator:
             desc = u"{} {}x{}".format(type_comments, size_str, thick_str).strip() if thick_str else u"{} {}".format(type_comments, size_str).strip()
             if not desc: desc = DEF_DESC
 
-            base_param = seg["pipe"].LookupParameter(PRM_BASE)
-            if base_param and base_param.HasValue: base_str = base_param.AsString().replace('\\n', '\n')
+            # Ищем параметры основания строго по GUID (сначала в экземпляре, затем в типе)
+            guid_base = System.Guid(PRM_BASE_GUID)
+            guid_base_h = System.Guid(PRM_BASE_H_GUID)
 
-            h_param = seg["pipe"].LookupParameter(PRM_BASE_H)
+            base_param = seg["pipe"].get_Parameter(guid_base) or (doc.GetElement(p_type_id).get_Parameter(guid_base) if p_type_id != DB.ElementId.InvalidElementId else None)
+            if base_param and base_param.HasValue:
+                b_str = base_param.AsString() or base_param.AsValueString()
+                if b_str: base_str = b_str.replace('\\n', '\n')
+
+            h_param = seg["pipe"].get_Parameter(guid_base_h) or (doc.GetElement(p_type_id).get_Parameter(guid_base_h) if p_type_id != DB.ElementId.InvalidElementId else None)
+            
             if h_param and h_param.HasValue:
                 if h_param.StorageType == DB.StorageType.String:
                     try:
                         v_num = float(h_param.AsString().replace(',', '.').replace(' ', '').replace('мм', '').replace('м', ''))
-                        cushion_m = v_num / 1000.0
                         h_val_str = str(int(v_num)) if int(v_num) == v_num else str(v_num)
                     except: pass
                 elif h_param.StorageType == DB.StorageType.Double:
                     val_mm = h_param.AsDouble() * 304.8
-                    cushion_m = val_mm / 1000.0
                     h_val_str = str(int(round(val_mm))) if abs(val_mm - round(val_mm)) < 1e-4 else "{:.1f}".format(val_mm).replace('.', ',')
                 elif h_param.StorageType == DB.StorageType.Integer:
                     val_mm = h_param.AsInteger()
-                    cushion_m = val_mm / 1000.0
                     h_val_str = str(val_mm)
 
+            # Формируем текст основания, но переменную cushion_m больше не считаем
             full_base_text = "{} H={} мм".format(base_str, h_val_str)
-            raw_d.append({"x1": x1, "z1": seg["s"].Z, "pt_s": seg["s"], "x2": x2, "z2": seg["e"].Z, "pt_e": seg["e"], "d_outer": seg["d"], "is_vert": is_v, "desc": desc, "base_text": full_base_text, "cushion_m": cushion_m, "abbr": seg["abbr"], "pipe": seg["pipe"]})
+            raw_d.append({"x1": x1, "z1": seg["s"].Z, "pt_s": seg["s"], "s": seg["s"], "x2": x2, "z2": seg["e"].Z, "pt_e": seg["e"], "e": seg["e"], "d_outer": seg["d"], "is_vert": is_v, "desc": desc, "base_text": full_base_text, "abbr": seg["abbr"], "pipe": seg["pipe"]})
             
             cur_ref = seg["e"]
             cur_x = x2

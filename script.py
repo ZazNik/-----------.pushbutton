@@ -3,8 +3,9 @@ __title__ = "Профиль\nГОСТ НВК"
 __doc__ = "Создает продольный профиль наружных сетей (НВК) по ГОСТ на основе выделенных элементов и DWG-подложки."
 
 import traceback
+import System
 from pyrevit import revit, DB, forms
-from Autodesk.Revit.UI.Selection import ObjectType
+from Autodesk.Revit.UI.Selection import ObjectType, ISelectionFilter
 from Autodesk.Revit.Exceptions import OperationCanceledException
 from System.Windows.Forms import DialogResult
 
@@ -18,6 +19,18 @@ from renderer import ProfileRenderer
 doc = revit.doc
 uidoc = revit.uidoc
 
+class SelectedElementsFilter(ISelectionFilter):
+    """Фильтр, позволяющий кликнуть только на элементы из заранее заданного списка."""
+    def __init__(self, allowed_ids):
+        self.allowed_ids = allowed_ids
+
+    def AllowElement(self, element):
+        # Разрешаем выбор только тех элементов, чьи Id есть в нашем списке
+        return element.Id in self.allowed_ids
+
+    def AllowReference(self, reference, position):
+        return True
+
 def main():
     sel_ids = uidoc.Selection.GetElementIds()
     if not sel_ids:
@@ -26,7 +39,16 @@ def main():
     selected_elements = [doc.GetElement(id) for id in sel_ids]
 
     try:
-        picked_ref = uidoc.Selection.PickObject(ObjectType.Element, "Укажите НАЧАЛО трассы")
+        # Собираем Id всех элементов, которые пользователь выделил перед запуском
+        allowed_ids = [el.Id for el in selected_elements]
+        custom_filter = SelectedElementsFilter(allowed_ids)
+        
+        # Запрашиваем начало СТРОГО из выделенного списка (защита от промаха)
+        picked_ref = uidoc.Selection.PickObject(
+            ObjectType.Element, 
+            custom_filter, 
+            "Укажите НАЧАЛО трассы (кликните на элемент из выделенных)"
+        )
         start_element = doc.GetElement(picked_ref.ElementId)
     except OperationCanceledException:
         return 
@@ -34,6 +56,7 @@ def main():
         print(traceback.format_exc())
         forms.alert("Ошибка при выборе элемента:\n{}".format(e), exitscript=True)
 
+    # Дальше идет сбор DWG подложек и остальной код...
     dwgs_dict = {imp.Category.Name: imp for imp in DB.FilteredElementCollector(doc).OfClass(DB.ImportInstance) if imp.Category}
     if not dwgs_dict:
         forms.alert("Нет DWG подложек в проекте!", exitscript=True)

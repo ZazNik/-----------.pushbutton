@@ -157,23 +157,23 @@ def get_z_on_profile(x_target, profile_pts):
 
 def get_exact_pipe_data(x_target, raw_data):
     """
-    Ищет параметры трубы (Z центра, диаметр, толщина подушки) для заданной X координаты.
+    Ищет параметры трубы (Z центра, диаметр) для заданной X координаты.
     """
-    best_z, best_d, best_c = 0.0, 0.0, 0.1
+    best_z, best_d = 0.0, 0.0
     min_dist = float('inf')
     
-    for d in raw_data:
+    for d in raw_data: # <--- Исправлено здесь: raw_data вместо raw_d
         if d.get("is_vert", False): continue 
         
         dist1 = abs(d["x1"] - x_target)
         dist2 = abs(d["x2"] - x_target)
         
         if dist1 < min_dist:
-            min_dist, best_z, best_d, best_c = dist1, d["z1"], d["d_outer"], d.get("cushion_m", 0.1)
+            min_dist, best_z, best_d = dist1, d["z1"], d["d_outer"]
         if dist2 < min_dist:
-            min_dist, best_z, best_d, best_c = dist2, d["z2"], d["d_outer"], d.get("cushion_m", 0.1)
+            min_dist, best_z, best_d = dist2, d["z2"], d["d_outer"]
             
-    return best_z, best_d, best_c
+    return best_z, best_d
 
 def get_horiz_pipe_z_center(x_target, raw_data):
     """Получает Z центра трубы на конкретном пикете."""

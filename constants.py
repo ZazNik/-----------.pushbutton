@@ -2,9 +2,9 @@
 
 # Параметры труб
 PRM_SIZE = "Размер"
-PRM_THICKNESS = "ADSK_Толщина стенки"
-PRM_BASE = "Основание прокладки"
-PRM_BASE_H = "H основания"
+PRM_THICKNESS_GUID = "381b467b-3518-42bb-b183-35169c9bdfb3"
+PRM_BASE_GUID = "7b177540-3bf1-49af-8220-d799ce522429"   # Тип основания
+PRM_BASE_H_GUID = "e04d2fd3-e3ab-49dd-be14-e96c72dae8d6" # Толщина основания
 
 # Значения по умолчанию и ключевые слова
 DEF_SYSTEM = "Система не задана"
