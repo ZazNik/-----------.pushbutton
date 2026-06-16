@@ -360,21 +360,39 @@ class ProfileCalculator:
         
         raw_xs.sort()
         final_xs = []
+        
+        def get_cluster_rep(cls):
+            # 1. Приоритет: Точные координаты колодцев
+            for cx in cls:
+                if any(abs(cx - md["mx"]) < 0.01 for md in mh_snap_data): return cx
+            # 2. Приоритет: Математическое начало или конец трассы
+            for cx in cls:
+                if abs(cx) < 0.01 or abs(cx - cur_x) < 0.01: return cx
+            # 3. Иначе: среднее значение группы
+            return sum(cls) / len(cls)
+
         if raw_xs:
             cluster = [raw_xs[0]]
-            TOLERANCE = 0.70 / 0.3048 
+            TOLERANCE = 0.70 / 0.3048 # Допуск слияния близких ординат (около 20 см)
             for nx in raw_xs[1:]:
-                if nx - cluster[-1] <= TOLERANCE: cluster.append(nx)
+                if nx - cluster[-1] <= TOLERANCE: 
+                    cluster.append(nx)
                 else: 
-                    final_xs.append(sum(cluster) / len(cluster))
+                    final_xs.append(get_cluster_rep(cluster))
                     cluster = [nx]
-            if cluster: final_xs.append(sum(cluster) / len(cluster))
+            if cluster: 
+                final_xs.append(get_cluster_rep(cluster))
 
-            # --- СТРОГАЯ ОБРЕЗКА ОРДИНАТ (от 0.0 до cur_x) ---
+            # --- СТРОГАЯ ОБРЕЗКА ОРДИНАТ ---
             final_xs = [x for x in final_xs if -1e-5 <= x <= cur_x + 1e-5]
+            
             if final_xs:
-                if final_xs[0] > 0.05: final_xs.insert(0, 0.0)
-                if final_xs[-1] < cur_x - 0.05: final_xs.append(cur_x)
+                # Добавляем 0.0 (Начало), только если первая ордината дальше 15 см (0.5 фута)
+                if final_xs[0] > 0.5: 
+                    final_xs.insert(0, 0.0)
+                # Добавляем cur_x (Конец), только если последняя ордината дальше 15 см (0.5 фута)
+                if final_xs[-1] < cur_x - 0.5: 
+                    final_xs.append(cur_x)
             else:
                 final_xs = [0.0, cur_x]
 
@@ -391,22 +409,52 @@ class ProfileCalculator:
 
         # --- 6. ВИЗУАЛЬНЫЕ НАСТРОЙКИ (Искажение, Base Z) ---
         DISTORTION_Y = float(form.scale_x) / float(form.scale_y)
+        
+        # Этот массив (all_z) оставляем для расчета верхней границы шкалы высот (воздух)
         all_z = [d["z1"] for d in raw_d] + [d["z2"] for d in raw_d] + [p["z"] for p in cln_b]
         
         # --- ИДЕНТИФИЦИРУЕМ ОТВЕТВЛЕНИЯ (СТОЯКИ) ---
-        # Находим трубы, которые были выделены, но не вошли в основную трассу (тройники)
         o_pipe_ids = [op.Id for op in o_pipes]
         branch_pipes = [p for p in main_pipes if p.Id not in o_pipe_ids]
         
-        # Добавляем их отметки в all_z, чтобы шкала высот не обрезала стояки
         for bp in branch_pipes:
             c = bp.Location.Curve
             if c: all_z.extend([c.GetEndPoint(0).Z, c.GetEndPoint(1).Z])
             
         if not all_z: raise Exception("Нет отметок (Z)!")
         
-        min_z_m = min(all_z) * 0.3048
-        base_z_m = float(form.custom_base_z_val) if form.custom_base_z_checked else math.floor(min_z_m - 2.0) 
+        # --- УМНЫЙ ПОИСК САМОЙ НИЖНЕЙ ТОЧКИ (ДНА ПРОФИЛЯ) ---
+        all_bottom_z = list(all_z) 
+        
+        # 1. Низы основных труб
+        for d in raw_d:
+            all_bottom_z.extend([d["z1"] - d["d_outer"]/2.0, d["z2"] - d["d_outer"]/2.0])
+            
+        # 2. Низы стояков
+        for bp in branch_pipes:
+            c = bp.Location.Curve
+            if c: 
+                r = revit_utils.get_diameter(bp) / 2.0
+                all_bottom_z.extend([c.GetEndPoint(0).Z - r, c.GetEndPoint(1).Z - r])
+                
+        # 3. Низы пересекаемых коммуникаций + запас под выноску с текстом
+        for cr in cross_pipes:
+            real_d = cr.get("real_d_out", 0.1)
+            # Текст на бумаге занимает ~15 мм вниз. Переводим это в реальные метры высоты с учетом вертикального масштаба
+            text_drop_m = (15.0 * form.scale_y) / 1000.0 
+            # Отметка дна пересечки минус место под текст (переводим метры обратно во внутренние футы Revit)
+            z_bot = cr["z"] - (real_d / 2.0) - (text_drop_m / 0.3048)
+            all_bottom_z.append(z_bot)
+            
+        # 4. Физическое дно колодцев (по нижней точке BoundingBox)
+        for mh in manholes:
+            bb = mh.get_BoundingBox(None)
+            if bb: all_bottom_z.append(bb.Min.Z)
+        
+        min_z_m = min(all_bottom_z) * 0.3048
+        
+        # Так как мы точно учли все габариты и тексты, нам достаточно запаса в 1 метр до таблицы
+        base_z_m = float(form.custom_base_z_val) if form.custom_base_z_checked else math.floor(min_z_m - 1.0) 
         base_z = base_z_m / 0.3048
 
         p_geom = []

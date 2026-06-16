@@ -257,12 +257,10 @@ class ProfileRenderer:
         profile_builder.draw_line(doc, new_view, x_labels_right, y_lines[0], x_labels_right, y_lines[-1], s_grid) 
         profile_builder.draw_line(doc, new_view, x_table_end, y_lines[0], x_table_end, y_lines[-1], s_grid) 
         
-        start_has_mh = any(abs(x_data_start - rm["mx"]) < 0.01 for rm in real_mhs)
-        end_has_mh = any(abs(x_data_end - rm["mx"]) < 0.01 for rm in real_mhs)
-        
         # Завершение сетки таблицы перед Номером колодца (Индекс 7)
-        y_bot_start = y_lines[7] if start_has_mh else y_lines[-1]
-        y_bot_end = y_lines[7] if end_has_mh else y_lines[-1]
+        # Жестко останавливаем линии, чтобы они НИКОГДА не пересекали строку номеров колодцев
+        y_bot_start = y_lines[7]
+        y_bot_end = y_lines[7]
         
         # Оставляем открытыми строки 3 (Обозначение) и 4 (Основание). Сетка начинается со строки 5 (Уклон).
         profile_builder.draw_line(doc, new_view, x_data_start, y_lines[5], x_data_start, y_bot_start, s_grid)
@@ -410,19 +408,67 @@ class ProfileRenderer:
         pipe_groups, pipe_boundaries = group_segs(desc_segments, "desc")
         base_groups, base_boundaries = group_segs(base_segments, "base_text")
 
+        # --- УМНАЯ ЛОГИКА ГРУППИРОВКИ УКЛОНОВ ---
+        tolerance = form.slope_tol_val
         grouped_segments = []
-        for s in segments:
-            s["orig_slope"] = s["slope"]
-            grouped_segments.append(s)
+        if segments:
+            cur = segments[0].copy()
+            cur["orig_slope"] = cur["slope"]
+            for s in segments[1:]:
+                dir_cur = geometry.get_dir(cur["slope"])
+                dir_s = geometry.get_dir(s["slope"])
+                
+                # --- ПРОВЕРКА ПЕРЕПАДА НА СТЫКЕ (x_bnd) ---
+                x_bnd = s["x1"]
+                inc_bots = [d["z2"] - (d["d_outer"] / 2.0) for d in raw_d if not d.get("is_vert", False) and abs(d["x2"] - x_bnd) < 0.01]
+                out_bots = [d["z1"] - (d["d_outer"] / 2.0) for d in raw_d if not d.get("is_vert", False) and abs(d["x1"] - x_bnd) < 0.01]
+                
+                has_drop = False
+                if inc_bots and out_bots:
+                    z_in_m = round(inc_bots[0] * 0.3048 + 1e-9, 2)
+                    z_out_m = round(out_bots[0] * 0.3048 + 1e-9, 2)
+                    
+                    # Формируем точно такие же строки, какие печатаются в таблицу профиля
+                    str_in = "{:.2f}".format(z_in_m)
+                    str_out = "{:.2f}".format(z_out_m)
+                    
+                    # Строгое сравнение: если цифры на бумаге будут отличаться, фиксируем перепад
+                    if str_in != str_out:
+                        has_drop = True
+                
+                # Сливаем, если: направления совпадают И разница уклонов в допуске И НЕТ ПЕРЕПАДА
+                if dir_cur == dir_s and abs(cur["slope"] - s["slope"]) <= tolerance and not has_drop:
+                    prev_L = cur["L"]
+                    cur["x2"] = s["x2"]
+                    cur["L"] = float("{:.1f}".format(prev_L + s["L"]))
+                    # Вычисляем математически точный средневзвешенный уклон объединенного участка
+                    if cur["L"] > 0.001:
+                        cur["slope"] = (cur["slope"] * prev_L + s["slope"] * s["L"]) / cur["L"]
+                else:
+                    grouped_segments.append(cur)
+                    cur = s.copy()
+                    cur["orig_slope"] = cur["slope"]
+            grouped_segments.append(cur)
             
         slope_boundaries = set([g["x1"] for g in grouped_segments] + [g["x2"] for g in grouped_segments])
 
-        # Вертикальные линии границ участков внутри таблицы (от Обозначения до Номера колодца)
+       # Вертикальные линии границ участков внутри таблицы
         for x in final_xs[1:-1]:
-            if any(abs(x - bx) < 0.01 for bx in pipe_boundaries): profile_builder.draw_line(doc, new_view, x, y_lines[3], x, y_lines[4], s_grid)
-            if any(abs(x - bx) < 0.01 for bx in base_boundaries): profile_builder.draw_line(doc, new_view, x, y_lines[4], x, y_lines[5], s_grid)
-            if any(abs(x - bx) < 0.01 for bx in slope_boundaries): profile_builder.draw_line(doc, new_view, x, y_lines[5], x, y_lines[6], s_grid)
+            # 1. Линии Обозначения (3) и Основания (4) — ТОЛЬКО ПРИ СМЕНЕ ЗНАЧЕНИЯ
+            if any(abs(x - bx) < 0.01 for bx in pipe_boundaries): 
+                profile_builder.draw_line(doc, new_view, x, y_lines[3], x, y_lines[4], s_grid)
+            
+            if any(abs(x - bx) < 0.01 for bx in base_boundaries): 
+                profile_builder.draw_line(doc, new_view, x, y_lines[4], x, y_lines[5], s_grid)
+            
+            # 2. Линии Уклонов (5) — ТОЛЬКО ПРИ СМЕНЕ УКАЛОНА
+            if any(abs(x - bx) < 0.01 for bx in slope_boundaries): 
+                profile_builder.draw_line(doc, new_view, x, y_lines[5], x, y_lines[6], s_grid)
+                
+            # 3. Расстояние (6) — оставляем на каждой ординате (по ГОСТу)
             profile_builder.draw_line(doc, new_view, x, y_lines[6], x, y_lines[7], s_grid)
+            
+            # 4. Номер колодца (7) — линий нет (как мы и условились ранее)
             
         # Текст Обозначения и Основания
         for g in pipe_groups: profile_builder.place_text(doc, new_view.Id, (g["x1"] + g["x2"]) / 2.0, (y_lines[3] + y_lines[4]) / 2.0, g["desc"], 0.0, txt_id)
@@ -456,6 +502,20 @@ class ProfileRenderer:
             
             max_ground_z = max([v for v in [z_b_val, z_r_val] if v is not None] or [cln_b[-1]["z"]])
             profile_builder.draw_line(doc, new_view, x, y_lines[0], x, (max_ground_z - base_z) * DISTORTION_Y, s_ord)
+
+            # --- ВЫВОД ГЛУБИНЫ ЗАЛОЖЕНИЯ НАД ОРДИНАТОЙ КОЛОДЦА ---
+            is_mh_ordinate = any(abs(x - rm["mx"]) < 0.01 for rm in real_mhs)
+            if is_mh_ordinate:
+                depth_h = z_r_text - main_bot_m
+                y_ground = (z_r_val - base_z) * DISTORTION_Y
+                # Смещение текста вверх на 2 мм на бумаге, чтобы он не сливался с линией земли
+                y_text = y_ground + geometry.paper_mm_to_ft(2.0, form.scale_x)
+                profile_builder.place_text(
+                    doc, new_view.Id, x, y_text, 
+                    "{:.2f}".format(depth_h).replace('.', ','), 0.0, txt_id, 
+                    halign=DB.HorizontalTextAlignment.Center, 
+                    valign=DB.VerticalTextAlignment.Bottom
+                )
 
             ang = math.pi / 2.0
             offset = geometry.paper_mm_to_ft(1.5, form.scale_x) 

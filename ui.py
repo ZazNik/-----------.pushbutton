@@ -127,15 +127,27 @@ class DwgLayerSelector(Form):
         self.tb_sy.Size = Size(160, 20)
         self.Controls.Add(self.tb_sy)
         
+        lbl_tol = Label()
+        lbl_tol.Text = u"Допуск объедин. уклонов (‰):"
+        lbl_tol.Location = Point(20, 330)
+        lbl_tol.Size = Size(200, 15)
+        self.Controls.Add(lbl_tol)
+        
+        self.tb_tol = TextBox()
+        self.tb_tol.Text = self.config.get(u"slope_tol", u"0.5")
+        self.tb_tol.Location = Point(220, 328)
+        self.tb_tol.Size = Size(120, 20)
+        self.Controls.Add(self.tb_tol)
+
         lbl_st = Label()
         lbl_st.Text = u"Назначение стилей линий:"
-        lbl_st.Location = Point(20, 330)
+        lbl_st.Location = Point(20, 360)
         lbl_st.Size = Size(300, 15)
         self.Controls.Add(lbl_st)
 
         self.panel_styles = Panel()
-        self.panel_styles.Location = Point(20, 350)
-        self.panel_styles.Size = Size(320, 230)
+        self.panel_styles.Location = Point(20, 380)
+        self.panel_styles.Size = Size(320, 200)
         self.panel_styles.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right
         self.panel_styles.AutoScroll = True
         self.panel_styles.BorderStyle = BorderStyle.FixedSingle
@@ -241,8 +253,14 @@ class DwgLayerSelector(Form):
             self.scale_x = int(self.tb_sx.Text)
             self.scale_y = int(self.tb_sy.Text)
         except: pass 
+
+        try:
+            self.slope_tol_val = float(self.tb_tol.Text.replace(',', '.'))
+        except: 
+            self.slope_tol_val = 0.5
         
         self.custom_base_z_checked = self.cb_custom_z.Checked
+
         try:
             self.custom_base_z_val = float(self.tb_custom_z.Text.replace(',', '.'))
         except:
@@ -282,6 +300,8 @@ class DwgLayerSelector(Form):
         self.config[u"layer_red"] = safe_unicode(self.cb_layer_red.SelectedItem)
         self.config[u"scale_x"] = safe_unicode(self.tb_sx.Text)
         self.config[u"scale_y"] = safe_unicode(self.tb_sy.Text)
+        self.config[u"slope_tol"] = safe_unicode(self.tb_tol.Text) # <--- ДОБАВИТЬ ЭТУ СТРОЧКУ
+        self.config[u"custom_z_checked"] = u"True" if self.cb_custom_z.Checked else u"False"
         self.config[u"custom_z_checked"] = u"True" if self.cb_custom_z.Checked else u"False"
         self.config[u"custom_z_val"] = safe_unicode(self.tb_custom_z.Text)
         
