@@ -260,11 +260,12 @@ class ProfileCalculator:
                     calc_cz = cp_s.Z if dist_s < dist_e else cp_e.Z
                     
                     cross_pipes.append({
+                        "id": cp.Id.IntegerValue, # <--- ДОБАВИЛИ ID
                         "x": md["mx"], 
                         "z": calc_cz, 
                         "real_d_out": revit_utils.get_diameter(cp), 
                         "abbr": revit_utils.get_pipe_abbr(cp, doc),
-                        "in_manhole": True # <--- Ставим флаг, что труба в колодце
+                        "in_manhole": True
                     })
                     is_added = True
                     break 
@@ -279,6 +280,7 @@ class ProfileCalculator:
                     calc_cz = cp_s.Z + t_cp * (cp_e.Z - cp_s.Z)
                     
                     cross_pipes.append({
+                        "id": cp.Id.IntegerValue,
                         "x": calc_cx, 
                         "z": calc_cz, 
                         "real_d_out": revit_utils.get_diameter(cp), 

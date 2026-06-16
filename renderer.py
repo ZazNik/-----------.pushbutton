@@ -8,10 +8,11 @@ import revit_utils
 from constants import *
 
 class ProfileRenderer:
-    def __init__(self, doc, form, data):
+    def __init__(self, doc, form, data, target_view=None): # <--- Добавили target_view
         self.doc = doc
         self.form = form
         self.data = data
+        self.target_view = target_view # <--- Сохраняем его
 
     def render(self):
         # Создаем локальные ссылки, чтобы перенесенный код работал "как есть"
@@ -34,6 +35,43 @@ class ProfileRenderer:
         cur_x = self.data["cur_x"]
         all_z = self.data["all_z"]
 
+        # --- ИНИЦИАЛИЗАЦИЯ SMART DELTAS ---
+        manual_deltas = self.data.get("manual_deltas", {})
+        tracked_annotations = {}
+        
+        def track_and_apply_delta(element, key, math_x, math_y, math_lx=None, math_ly=None, is_text=False):
+            if not element: return
+            try:
+                d = manual_deltas.get(key)
+                if is_text:
+                    orig_w = element.Width
+                    if d:
+                        if "w" in d:
+                            try: element.Width = d["w"]
+                            except: pass
+                        if "dx" in d or "dy" in d:
+                            DB.ElementTransformUtils.MoveElement(doc, element.Id, DB.XYZ(d.get("dx",0), d.get("dy",0), 0))
+                    tracked_annotations[key] = {"type": "text", "id": element.Id.IntegerValue, "x": math_x, "y": math_y, "w": orig_w}
+                else:
+                    # Двигаем саму рамку выноски
+                    if d and ("dx" in d or "dy" in d):
+                        DB.ElementTransformUtils.MoveElement(doc, element.Id, DB.XYZ(d.get("dx",0), d.get("dy",0), 0))
+                    
+                    # ПРИМЕНЯЕМ СДВИГ К САМОЙ СТРЕЛКЕ (ОСТРИЮ ВЫНОСКИ)
+                    if d and ("ldx" in d or "ldy" in d) and math_lx is not None and math_ly is not None:
+                        try:
+                            ldrs = None
+                            if hasattr(element, "GetLeaders"): ldrs = element.GetLeaders()
+                            elif hasattr(element, "get_Leaders"): ldrs = element.get_Leaders()
+                            elif hasattr(element, "Leaders"): ldrs = element.Leaders
+                            
+                            if ldrs and len(ldrs) > 0:
+                                ldrs[0].End = DB.XYZ(math_lx + d.get("ldx", 0), math_ly + d.get("ldy", 0), 0)
+                        except: pass
+
+                    tracked_annotations[key] = {"type": "leader", "id": element.Id.IntegerValue, "x": math_x, "y": math_y, "lx": math_lx, "ly": math_ly}
+            except: pass
+
         # Получаем стили (раньше это висело в самом начале script.py)
         s_blk = revit_utils.get_line_style(doc, form.selected_styles.get("style_blk", DEF_LINE_STYLE))
         s_red = revit_utils.get_line_style(doc, form.selected_styles.get("style_red", DEF_LINE_STYLE))
@@ -43,11 +81,16 @@ class ProfileRenderer:
         s_grid = revit_utils.get_line_style(doc, form.selected_styles.get("style_grid", DEF_LINE_STYLE))
 
         # ==========================================
-        # 7. СОЗДАНИЕ ВИДА И ОТРИСОВКА
+        # 7. СОЗДАНИЕ ВИДА И ОТРИСОВКА 
         # ==========================================
-        new_view = profile_builder.create_drafting_view(doc, form.view_name, form.scale_x)
+        if self.target_view:
+            new_view = self.target_view
+        else:
+            new_view = profile_builder.create_drafting_view(doc, form.view_name, form.scale_x)
+            
+        # Запоминаем ID всех элементов ДО нашей отрисовки (для умного сборщика мусора)
+        existing_ids = set([e.Id.IntegerValue for e in DB.FilteredElementCollector(doc, new_view.Id).ToElements()])
 
-        # Вычисляем интервалы колодцев для подрезки по их РЕАЛЬНЫМ габаритам
         # Вычисляем интервалы колодцев для подрезки по их РЕАЛЬНЫМ габаритам
         mh_intervals = []
         # Мы НЕ обнуляем real_mhs, а используем готовый из calculator.py!
@@ -316,7 +359,10 @@ class ProfileRenderer:
                         
                 placed_labels.append((p_sh_x, p_sh_y))
                 
-                if not profile_builder.create_leader_annotation(doc, new_view, DB.XYZ(p_sh_x, p_sh_y, 0), DB.XYZ(cx, cy, 0), sym_an, top_text, bot_text, calc_len_mm):
+                leader = profile_builder.create_leader_annotation(doc, new_view, DB.XYZ(p_sh_x, p_sh_y, 0), DB.XYZ(cx, cy, 0), sym_an, top_text, bot_text, calc_len_mm)
+                track_and_apply_delta(leader, "casing_{}".format(cp.Id.IntegerValue), p_sh_x, p_sh_y, cx, cy, is_text=False)
+                
+                if not leader:
                     sh_len = geometry.paper_mm_to_ft(calc_len_mm, form.scale_x)
                     profile_builder.draw_line(doc, new_view, cx, cy, p_sh_x, p_sh_y, s_ord)
                     profile_builder.draw_line(doc, new_view, p_sh_x, p_sh_y, p_sh_x + sh_len, p_sh_y, s_ord)
@@ -348,7 +394,10 @@ class ProfileRenderer:
                         
                 placed_labels.append((p_sh_x, p_sh_y))
                 
-                if not profile_builder.create_leader_annotation(doc, new_view, DB.XYZ(p_sh_x, p_sh_y, 0), DB.XYZ(cx, cy - R, 0), sym_an, t_top, t_bot, calc_len_mm):
+                leader = profile_builder.create_leader_annotation(doc, new_view, DB.XYZ(p_sh_x, p_sh_y, 0), DB.XYZ(cx, cy - R, 0), sym_an, t_top, t_bot, calc_len_mm)
+                track_and_apply_delta(leader, "cross_{}".format(cr.get("id", 0)), p_sh_x, p_sh_y, cx, cy - R, is_text=False)
+                
+                if not leader:
                     sh_len = geometry.paper_mm_to_ft(calc_len_mm, form.scale_x)
                     profile_builder.draw_line(doc, new_view, cx, cy - R, p_sh_x, p_sh_y, s_ord)
                     profile_builder.draw_line(doc, new_view, p_sh_x, p_sh_y, p_sh_x + sh_len, p_sh_y, s_ord)
@@ -471,8 +520,15 @@ class ProfileRenderer:
             # 4. Номер колодца (7) — линий нет (как мы и условились ранее)
             
         # Текст Обозначения и Основания
-        for g in pipe_groups: profile_builder.place_text(doc, new_view.Id, (g["x1"] + g["x2"]) / 2.0, (y_lines[3] + y_lines[4]) / 2.0, g["desc"], 0.0, txt_id)
-        for g in base_groups: profile_builder.place_text(doc, new_view.Id, (g["x1"] + g["x2"]) / 2.0, (y_lines[4] + y_lines[5]) / 2.0, g["base_text"], 0.0, txt_id)
+        for idx, g in enumerate(pipe_groups): 
+            x_m, y_m = (g["x1"] + g["x2"]) / 2.0, (y_lines[3] + y_lines[4]) / 2.0
+            tn = profile_builder.place_text(doc, new_view.Id, x_m, y_m, g["desc"], 0.0, txt_id)
+            track_and_apply_delta(tn, "desc_{}".format(idx), x_m, y_m, is_text=True)
+            
+        for idx, g in enumerate(base_groups): 
+            x_m, y_m = (g["x1"] + g["x2"]) / 2.0, (y_lines[4] + y_lines[5]) / 2.0
+            tn = profile_builder.place_text(doc, new_view.Id, x_m, y_m, g["base_text"], 0.0, txt_id)
+            track_and_apply_delta(tn, "base_{}".format(idx), x_m, y_m, is_text=True)
 
         # Вывод ординат (Низ трубы, Проектная, Фактическая)
         for idx, x in enumerate(final_xs):
@@ -508,14 +564,9 @@ class ProfileRenderer:
             if is_mh_ordinate:
                 depth_h = z_r_text - main_bot_m
                 y_ground = (z_r_val - base_z) * DISTORTION_Y
-                # Смещение текста вверх на 2 мм на бумаге, чтобы он не сливался с линией земли
                 y_text = y_ground + geometry.paper_mm_to_ft(2.0, form.scale_x)
-                profile_builder.place_text(
-                    doc, new_view.Id, x, y_text, 
-                    "{:.2f}".format(depth_h).replace('.', ','), 0.0, txt_id, 
-                    halign=DB.HorizontalTextAlignment.Center, 
-                    valign=DB.VerticalTextAlignment.Bottom
-                )
+                tn = profile_builder.place_text(doc, new_view.Id, x, y_text, "{:.2f}".format(depth_h).replace('.', ','), 0.0, txt_id, halign=DB.HorizontalTextAlignment.Center, valign=DB.VerticalTextAlignment.Bottom)
+                track_and_apply_delta(tn, "depth_{}".format(idx), x, y_text, is_text=True)
 
             ang = math.pi / 2.0
             offset = geometry.paper_mm_to_ft(1.5, form.scale_x) 
@@ -525,21 +576,29 @@ class ProfileRenderer:
             if z_in_m is not None and z_out_m is not None and abs(z_in_m - z_out_m) >= 0.01:
                 str_in = "{:.2f}".format(z_in_m).replace('.', ',')
                 str_out = "{:.2f}".format(z_out_m).replace('.', ',')
-                profile_builder.place_text(doc, new_view.Id, x - offset, y_pipe_row_center, str_in, ang, txt_id)
-                profile_builder.place_text(doc, new_view.Id, x + offset, y_pipe_row_center, str_out, ang, txt_id)
+                tn1 = profile_builder.place_text(doc, new_view.Id, x - offset, y_pipe_row_center, str_in, ang, txt_id)
+                track_and_apply_delta(tn1, "bot_in_{}".format(idx), x - offset, y_pipe_row_center, is_text=True)
+                
+                tn2 = profile_builder.place_text(doc, new_view.Id, x + offset, y_pipe_row_center, str_out, ang, txt_id)
+                track_and_apply_delta(tn2, "bot_out_{}".format(idx), x + offset, y_pipe_row_center, is_text=True)
             else:
                 single_bot = z_in_m if z_in_m is not None else (z_out_m if z_out_m is not None else main_bot_m)
                 str_single = "{:.2f}".format(single_bot).replace('.', ',')
-                profile_builder.place_text(doc, new_view.Id, x, y_pipe_row_center, str_single, ang, txt_id)
+                tn = profile_builder.place_text(doc, new_view.Id, x, y_pipe_row_center, str_single, ang, txt_id)
+                track_and_apply_delta(tn, "bot_sngl_{}".format(idx), x, y_pipe_row_center, is_text=True)
                 
             # 2. Отметка земли проектная (Строка 1-2)
-            if z_r_str: profile_builder.place_text(doc, new_view.Id, x, (y_lines[1] + y_lines[2])/2.0, z_r_str, ang, txt_id)
+            if z_r_str: 
+                tn = profile_builder.place_text(doc, new_view.Id, x, (y_lines[1] + y_lines[2])/2.0, z_r_str, ang, txt_id)
+                track_and_apply_delta(tn, "zr_{}".format(idx), x, (y_lines[1] + y_lines[2])/2.0, is_text=True)
             
             # 3. Отметка земли фактическая (Строка 2-3)
-            if z_b_str: profile_builder.place_text(doc, new_view.Id, x, (y_lines[2] + y_lines[3])/2.0, z_b_str, ang, txt_id)
+            if z_b_str: 
+                tn = profile_builder.place_text(doc, new_view.Id, x, (y_lines[2] + y_lines[3])/2.0, z_b_str, ang, txt_id)
+                track_and_apply_delta(tn, "zb_{}".format(idx), x, (y_lines[2] + y_lines[3])/2.0, is_text=True)
 
         # Отрисовка Уклонов
-        for g in grouped_segments:
+        for idx, g in enumerate(grouped_segments):
             x_start, x_end, L_m = g["x1"], g["x2"], g["L"]
             calc_slope = g["slope"]
             orig_slope = g.get("orig_slope", g["slope"])
@@ -551,26 +610,34 @@ class ProfileRenderer:
             
             if dir_val < 0:
                 profile_builder.draw_line(doc, new_view, x_start, y_t, x_end, y_b, s_grid) 
-                profile_builder.place_text(doc, new_view.Id, x_start + w*0.75, y_t - (y_t-y_b)*0.25, txt_s, 0.0, txt_id)
-                profile_builder.place_text(doc, new_view.Id, x_start + w*0.25, y_b + (y_t-y_b)*0.25, txt_L, 0.0, txt_id)
+                t1 = profile_builder.place_text(doc, new_view.Id, x_start + w*0.75, y_t - (y_t-y_b)*0.25, txt_s, 0.0, txt_id)
+                track_and_apply_delta(t1, "slp_s_{}".format(idx), x_start + w*0.75, y_t - (y_t-y_b)*0.25, is_text=True)
+                t2 = profile_builder.place_text(doc, new_view.Id, x_start + w*0.25, y_b + (y_t-y_b)*0.25, txt_L, 0.0, txt_id)
+                track_and_apply_delta(t2, "slp_l_{}".format(idx), x_start + w*0.25, y_b + (y_t-y_b)*0.25, is_text=True)
             elif dir_val > 0:
                 profile_builder.draw_line(doc, new_view, x_start, y_b, x_end, y_t, s_grid) 
-                profile_builder.place_text(doc, new_view.Id, x_start + w*0.25, y_t - (y_t-y_b)*0.25, txt_s, 0.0, txt_id)
-                profile_builder.place_text(doc, new_view.Id, x_start + w*0.75, y_b + (y_t-y_b)*0.25, txt_L, 0.0, txt_id)
+                t1 = profile_builder.place_text(doc, new_view.Id, x_start + w*0.25, y_t - (y_t-y_b)*0.25, txt_s, 0.0, txt_id)
+                track_and_apply_delta(t1, "slp_s_{}".format(idx), x_start + w*0.25, y_t - (y_t-y_b)*0.25, is_text=True)
+                t2 = profile_builder.place_text(doc, new_view.Id, x_start + w*0.75, y_b + (y_t-y_b)*0.25, txt_L, 0.0, txt_id)
+                track_and_apply_delta(t2, "slp_l_{}".format(idx), x_start + w*0.75, y_b + (y_t-y_b)*0.25, is_text=True)
             else:
                 y_m = (y_t + y_b) / 2.0
                 profile_builder.draw_line(doc, new_view, x_start, y_m, x_end, y_m, s_grid) 
-                profile_builder.place_text(doc, new_view.Id, x_start + w*0.5, y_t - (y_t-y_b)*0.25, "0", 0.0, txt_id)
-                profile_builder.place_text(doc, new_view.Id, x_start + w*0.5, y_b + (y_t-y_b)*0.25, txt_L, 0.0, txt_id)
+                t1 = profile_builder.place_text(doc, new_view.Id, x_start + w*0.5, y_t - (y_t-y_b)*0.25, "0", 0.0, txt_id)
+                track_and_apply_delta(t1, "slp_s_{}".format(idx), x_start + w*0.5, y_t - (y_t-y_b)*0.25, is_text=True)
+                t2 = profile_builder.place_text(doc, new_view.Id, x_start + w*0.5, y_b + (y_t-y_b)*0.25, txt_L, 0.0, txt_id)
+                track_and_apply_delta(t2, "slp_l_{}".format(idx), x_start + w*0.5, y_b + (y_t-y_b)*0.25, is_text=True)
 
         # Отрисовка строки "Расстояние"
         for i in range(len(final_xs) - 1):
-            profile_builder.place_text(doc, new_view.Id, (final_xs[i] + final_xs[i+1]) / 2.0, (y_lines[6] + y_lines[7])/2.0, geometry.fmt_len(float("{:.1f}".format((final_xs[i+1] - final_xs[i]) * 0.3048))), 0.0, txt_id)
+            x_m, y_m = (final_xs[i] + final_xs[i+1]) / 2.0, (y_lines[6] + y_lines[7])/2.0
+            tn = profile_builder.place_text(doc, new_view.Id, x_m, y_m, geometry.fmt_len(float("{:.1f}".format((final_xs[i+1] - final_xs[i]) * 0.3048))), 0.0, txt_id)
+            track_and_apply_delta(tn, "dist_{}".format(i), x_m, y_m, is_text=True)
 
         # 9. НОМЕРА КОЛОДЦЕВ (Строка 7-8)
         param_guid = System.Guid(PRM_MH_GUID)
         
-        for rm in real_mhs:
+        for idx, rm in enumerate(real_mhs):
             el = rm["el"]
             real_x = rm["mx"] 
             
@@ -579,6 +646,19 @@ class ProfileRenderer:
                 mh_number = p_num.AsString() or p_num.AsValueString()
                 if mh_number:
                     y_center = (y_lines[7] + y_lines[8]) / 2.0
-                    profile_builder.place_text(doc, new_view.Id, real_x, y_center, mh_number, 0.0, txt_id)
+                    tn = profile_builder.place_text(doc, new_view.Id, real_x, y_center, mh_number, 0.0, txt_id)
+                    track_and_apply_delta(tn, "mh_num_{}".format(idx), real_x, y_center, is_text=True)
 
-        forms.alert("Профиль успешно построен!\nВид: {}".format(new_view.Name), warn_icon=False)
+        # ==========================================
+        # 10. ФИНАЛИЗАЦИЯ И СБОР МУСОРА
+        # ==========================================
+        doc.Regenerate() # <--- ЭТА КОМАНДА РЕШАЕТ ПРОБЛЕМУ ДУБЛИКАТОВ НА 100%
+        
+        # Вычисляем разницу: получаем список ТОЛЬКО тех линий, которые скрипт нарисовал за этот проход
+        current_ids = set([e.Id.IntegerValue for e in DB.FilteredElementCollector(doc, new_view.Id).ToElements()])
+        generated_elements = list(current_ids - existing_ids)
+
+        forms.alert("Профиль успешно построен/обновлен!\nВид: {}".format(new_view.Name), warn_icon=False)
+        
+        # Возвращаем вид, список всех нарисованных ID и паспорта аннотаций
+        return new_view, generated_elements, tracked_annotations
