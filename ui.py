@@ -13,11 +13,11 @@ from config import load_config, save_config, safe_unicode
 from constants import *
 
 class DwgLayerSelector(Form):
-    def __init__(self, dwgs_dict, line_styles, pipe_systems):
+    def __init__(self, dwgs_dict, line_styles, pipe_systems, profile_views=None):
         self.Text = u"Создание профиля"
         self.Width = 380
-        self.Height = 710
-        self.MinimumSize = Size(380, 710)
+        self.Height = 790
+        self.MinimumSize = Size(380, 790)
         self.FormBorderStyle = FormBorderStyle.Sizable
         self.StartPosition = FormStartPosition.CenterScreen
         self.TopMost = True
@@ -25,6 +25,8 @@ class DwgLayerSelector(Form):
         self.dwgs_dict = dwgs_dict
         self.line_styles = line_styles
         self.pipe_systems = pipe_systems
+        self.profile_views = profile_views or []
+        self.append_to_view = None
         self.config = load_config()
         self.selected_styles = {} # Словарь для передачи в script.py
         self.view_name = u"Профиль ГОСТ"
@@ -193,9 +195,38 @@ class DwgLayerSelector(Form):
             lbl_text = ps_u if len(ps_u) < 20 else ps_u[:17] + u".."
             y_off = add_style(u"sys_" + ps_u, lbl_text + u":")
         
+        # --- БЛОК ОБЪЕДИНЕНИЯ ПРОФИЛЕЙ (МНОГОПРОФИЛЬНОСТЬ) ---
+        self.cb_append = CheckBox()
+        self.cb_append.Text = u"Добавить трассу на существующий чертеж"
+        self.cb_append.Location = Point(20, 610)
+        self.cb_append.Size = Size(320, 20)
+        self.cb_append.Anchor = AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right
+        self.cb_append.CheckedChanged += self.on_append_checked
+        self.Controls.Add(self.cb_append)
+
+        self.cb_views = ComboBox()
+        self.cb_views.DropDownStyle = ComboBoxStyle.DropDownList
+        self.cb_views.Location = Point(20, 635)
+        self.cb_views.Size = Size(320, 21)
+        self.cb_views.Anchor = AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right
+        self.cb_views.Enabled = False
+        
+        self.view_dict = {v.Name: v for v in self.profile_views}
+        for name in sorted(self.view_dict.keys()):
+            self.cb_views.Items.Add(name)
+            
+        if self.cb_views.Items.Count > 0:
+            self.cb_views.SelectedIndex = 0
+        else:
+            self.cb_append.Enabled = False
+            self.cb_append.Text = u"Нет доступных профилей"
+            
+        self.Controls.Add(self.cb_views)
+        # -----------------------------------------------------
+
         btn_ok = Button()
         btn_ok.Text = u"Построить профиль ГОСТ"
-        btn_ok.Location = Point(20, 620)
+        btn_ok.Location = Point(20, 675)
         btn_ok.Size = Size(320, 35)
         btn_ok.Anchor = AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right
         btn_ok.Click += self.on_ok
@@ -222,6 +253,9 @@ class DwgLayerSelector(Form):
                 cb.SelectedIndex = i
                 return True
         return False
+
+    def on_append_checked(self, sender, args):
+        self.cb_views.Enabled = self.cb_append.Checked
 
     def custom_z_changed(self, sender, args):
         self.tb_custom_z.Enabled = self.cb_custom_z.Checked
@@ -302,10 +336,14 @@ class DwgLayerSelector(Form):
         self.config[u"scale_y"] = safe_unicode(self.tb_sy.Text)
         self.config[u"slope_tol"] = safe_unicode(self.tb_tol.Text) # <--- ДОБАВИТЬ ЭТУ СТРОЧКУ
         self.config[u"custom_z_checked"] = u"True" if self.cb_custom_z.Checked else u"False"
-        self.config[u"custom_z_checked"] = u"True" if self.cb_custom_z.Checked else u"False"
         self.config[u"custom_z_val"] = safe_unicode(self.tb_custom_z.Text)
         
         save_config(self.config)
         
+        if self.cb_append.Checked and self.cb_views.SelectedItem:
+            self.append_to_view = self.view_dict[self.cb_views.SelectedItem]
+        else:
+            self.append_to_view = None
+            
         self.DialogResult = DialogResult.OK
         self.Close()

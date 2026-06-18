@@ -7,7 +7,7 @@ import geometry
 from constants import *
 
 class ProfileCalculator:
-    def __init__(self, doc, form, selected_elements, start_element, main_pipes, casing_pipes, manholes, ordered_nodes, o_pipes):
+    def __init__(self, doc, form, selected_elements, start_element, main_pipes, casing_pipes, manholes, ordered_nodes, o_pipes, start_x_offset=0.0):
         self.doc = doc
         self.form = form
         self.selected_elements = selected_elements
@@ -17,6 +17,7 @@ class ProfileCalculator:
         self.manholes = manholes
         self.ordered_nodes = ordered_nodes
         self.o_pipes = o_pipes
+        self.start_x_offset = start_x_offset
 
     def calculate(self):
         # Пробрасываем локальные переменные для перенесенного кода
@@ -75,18 +76,18 @@ class ProfileCalculator:
         dir_l = geometry.get_2d_dir(r_segs[-1]["s"], r_segs[-1]["e"]) or DB.XYZ(1,0,0) if r_segs else DB.XYZ(1,0,0)
 
         raw_d, pts_b, pts_r, bound_xs = [], [], [], []
-        cur_x = 0.0
+        cur_x = self.start_x_offset
         cur_ref = r_segs[0]["s"] if r_segs else DB.XYZ.Zero
         
         # --- СКАНИРОВАНИЕ ДО НАЧАЛА ТРАССЫ (15 метров назад) ---
         EXT_DIST = 15.0 / 0.3048 
         if r_segs:
             pt_s_ext = r_segs[0]["s"] - dir_f * EXT_DIST
-            pts_b.extend(geometry.slice_edges(pt_s_ext, r_segs[0]["s"], -EXT_DIST, e_blk))
-            if e_red: pts_r.extend(geometry.slice_edges(pt_s_ext, r_segs[0]["s"], -EXT_DIST, e_red))
-            for bp in geometry.slice_edges(pt_s_ext, r_segs[0]["s"], -EXT_DIST, e_blk_bnd): bound_xs.append(bp["x"])
+            pts_b.extend(geometry.slice_edges(pt_s_ext, r_segs[0]["s"], cur_x - EXT_DIST, e_blk))
+            if e_red: pts_r.extend(geometry.slice_edges(pt_s_ext, r_segs[0]["s"], cur_x - EXT_DIST, e_red))
+            for bp in geometry.slice_edges(pt_s_ext, r_segs[0]["s"], cur_x - EXT_DIST, e_blk_bnd): bound_xs.append(bp["x"])
             if e_red_bnd:
-                for rp in geometry.slice_edges(pt_s_ext, r_segs[0]["s"], -EXT_DIST, e_red_bnd): bound_xs.append(rp["x"])
+                for rp in geometry.slice_edges(pt_s_ext, r_segs[0]["s"], cur_x - EXT_DIST, e_red_bnd): bound_xs.append(rp["x"])
 
         # --- Сбор данных по трубам ---
         for i, seg in enumerate(r_segs):
@@ -369,7 +370,7 @@ class ProfileCalculator:
                 if any(abs(cx - md["mx"]) < 0.01 for md in mh_snap_data): return cx
             # 2. Приоритет: Математическое начало или конец трассы
             for cx in cls:
-                if abs(cx) < 0.01 or abs(cx - cur_x) < 0.01: return cx
+                if abs(cx - self.start_x_offset) < 0.01 or abs(cx - cur_x) < 0.01: return cx
             # 3. Иначе: среднее значение группы
             return sum(cls) / len(cls)
 
@@ -389,14 +390,14 @@ class ProfileCalculator:
             final_xs = [x for x in final_xs if -1e-5 <= x <= cur_x + 1e-5]
             
             if final_xs:
-                # Добавляем 0.0 (Начало), только если первая ордината дальше 15 см (0.5 фута)
-                if final_xs[0] > 0.5: 
-                    final_xs.insert(0, 0.0)
-                # Добавляем cur_x (Конец), только если последняя ордината дальше 15 см (0.5 фута)
+                # Добавляем Начало, только если первая ордината дальше 15 см (0.5 фута)
+                if final_xs[0] > self.start_x_offset + 0.5: 
+                    final_xs.insert(0, self.start_x_offset)
+                # Добавляем Конец, только если последняя ордината дальше 15 см (0.5 фута)
                 if final_xs[-1] < cur_x - 0.5: 
                     final_xs.append(cur_x)
             else:
-                final_xs = [0.0, cur_x]
+                final_xs = [self.start_x_offset, cur_x]
 
         # --- ГАРАНТИЯ ПОКРЫТИЯ ПОВЕРХНОСТЯМИ ---
         # Если точки поверхности всё ещё не дотягиваются до крайних колодцев, продлеваем крайние отметки горизонтально
@@ -578,6 +579,7 @@ class ProfileCalculator:
             "base_z": base_z,
             "base_z_m": base_z_m,
             "DISTORTION_Y": DISTORTION_Y,
+            "start_x": self.start_x_offset,
             "cur_x": cur_x,
             "all_z": all_z
         }
