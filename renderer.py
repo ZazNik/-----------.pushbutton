@@ -35,9 +35,10 @@ class ProfileRenderer:
         cur_x = self.data["cur_x"]
         all_z = self.data["all_z"]
 
-        # --- ЧИСТЫЙ ТРЕКЕР (Без костылей) ---
+        # --- ИДЕАЛЬНАЯ МАТЕМАТИКА ДЛЯ ТЕКСТОВ ---
         manual_deltas = self.data.get("manual_deltas", {})
         tracked_annotations = {}
+        texts_to_move = [] # Очередь для текстов
         
         def track_and_apply_delta(element, key, math_x, math_y, math_lx=None, math_ly=None, is_text=False, is_line=False):
             if not element: return
@@ -48,21 +49,29 @@ class ProfileRenderer:
                 
                 if is_text:
                     orig_w = element.Width
+                    
+                    # 1. ЗАСТАВЛЯЕМ REVIT УЧЕСТЬ ШРИФТЫ И БУКВЫ:
+                    doc.Regenerate()
+                    actual_x = element.Coord.X
+                    actual_y = element.Coord.Y
+                    
+                    # 2. ДВИГАЕМ:
                     if d:
                         if "w" in d:
                             try: element.Width = d["w"]
                             except: pass
                         if "dx" in d or "dy" in d:
                             DB.ElementTransformUtils.MoveElement(doc, element.Id, DB.XYZ(d.get("dx",0), d.get("dy",0), 0))
-                    # Пишем идеальную математику! (Сбросы дельт больше не страшны благодаря script.py)
-                    tracked_annotations[key] = {"type": "text", "id": element.Id.IntegerValue, "x": math_x, "y": math_y, "w": orig_w}
+                            
+                    # 3. СОХРАНЯЕМ ИСТИННЫЕ КООРДИНАТЫ ШРИФТА (убивает прыжки навсегда):
+                    tracked_annotations[key] = {"type": "text", "id": element.Id.IntegerValue, "x": actual_x, "y": actual_y, "w": orig_w}
                     
                 elif is_line:
                     if d and ("dx" in d or "dy" in d):
                         DB.ElementTransformUtils.MoveElement(doc, element.Id, DB.XYZ(d.get("dx",0), d.get("dy",0), 0))
                     tracked_annotations[key] = {"type": "line", "id": element.Id.IntegerValue, "x": math_x, "y": math_y}
                     
-                else:
+                else: # ВЫНОСКИ (вообще не трогаем, работают идеально)
                     if d and ("dx" in d or "dy" in d):
                         DB.ElementTransformUtils.MoveElement(doc, element.Id, DB.XYZ(d.get("dx",0), d.get("dy",0), 0))
                     if d and ("ldx" in d or "ldy" in d) and math_lx is not None and math_ly is not None:
@@ -605,6 +614,30 @@ class ProfileRenderer:
                     track_and_apply_delta(t1, "cross_t1_{}".format(cr.get("id", 0)), p_sh_x + sh_len/2.0, p_sh_y + geometry.paper_mm_to_ft(1.0, form.scale_x), is_text=True)
                     t2 = profile_builder.place_text(doc, new_view.Id, p_sh_x + sh_len/2.0, p_sh_y - geometry.paper_mm_to_ft(1.0, form.scale_x), t_bot, 0, txt_id, valign=DB.VerticalTextAlignment.Top)
                     track_and_apply_delta(t2, "cross_t2_{}".format(cr.get("id", 0)), p_sh_x + sh_len/2.0, p_sh_y - geometry.paper_mm_to_ft(1.0, form.scale_x), is_text=True)
+            except: pass
+
+        # --- ФИНАЛЬНАЯ ОБРАБОТКА ТЕКСТОВ ---
+        # Просим Revit прогрузить все ячейки и шрифты, чтобы получить ИСТИННЫЕ координаты базовых линий
+        doc.Regenerate()
+        for item in texts_to_move:
+            try:
+                el = item["el"]
+                key = item["key"]
+                d = item["d"]
+                
+                # Читаем системную координату текста ДО сдвига
+                base_x = el.Coord.X
+                base_y = el.Coord.Y
+                
+                # Сохраняем её как ИДЕАЛЬНЫЙ НОЛЬ
+                tracked_annotations[key] = {"type": "text", "id": el.Id.IntegerValue, "x": base_x, "y": base_y, "w": item["w"]}
+                
+                # Теперь двигаем текст на любую дельту (без ограничений!)
+                if d:
+                    dx = d.get("dx", 0.0)
+                    dy = d.get("dy", 0.0)
+                    if dx != 0.0 or dy != 0.0:
+                        DB.ElementTransformUtils.MoveElement(doc, el.Id, DB.XYZ(dx, dy, 0))
             except: pass
 
         doc.Regenerate()
